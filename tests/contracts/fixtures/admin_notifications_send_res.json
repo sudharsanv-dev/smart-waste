@@ -1,0 +1,7 @@
+{
+  "dispatch_id": "a1b2c3d4-e5f6-7890-1234-56789abcdef0",
+  "status": "QUEUED",
+  "target_type": "PINCODE",
+  "target_value": "600040",
+  "timestamp": "2026-11-14T18:35:00Z"
+}

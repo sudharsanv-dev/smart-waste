@@ -1,0 +1,6 @@
+{
+  "dispatch_id": "f5e4d3c2-b1a0-9876-5432-109876abcdef",
+  "status": "QUEUED",
+  "target_user_id": "uuid-of-the-consumer",
+  "timestamp": "2026-11-14T18:40:00Z"
+}

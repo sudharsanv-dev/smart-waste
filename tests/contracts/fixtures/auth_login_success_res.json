@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "message": "Consumer login successful",
+  "statusCode": 200,
+  "data": {
+    "user_id": "c1d2e3f4-a5b6-7890-1234-56789abcdef0",
+    "name": "John",
+    "username": "admin",
+    "mobile_number": "9876543210",
+    "role": "CONSUMER",
+    "access_token": "jwt_access_token",
+    "refresh_token": "jwt_refresh_token",
+    "token_type": "Bearer",
+    "expires_in": 3600
+  },
+  "errors": null
+}

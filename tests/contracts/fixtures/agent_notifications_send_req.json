@@ -1,0 +1,5 @@
+{
+  "title": "Agent Arriving Soon",
+  "body": "Your waste collection agent is 5 minutes away.",
+  "target_user_id": "uuid-of-the-consumer"
+}

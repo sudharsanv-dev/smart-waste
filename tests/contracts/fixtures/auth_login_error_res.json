@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "message": "Invalid username/mobile number or password",
+  "statusCode": 401,
+  "data": null,
+  "errors": {
+    "error_code": "INVALID_CREDENTIALS"
+  }
+}

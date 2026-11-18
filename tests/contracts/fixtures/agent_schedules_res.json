@@ -1,0 +1,17 @@
+{
+  "content": [
+    {
+      "id": "f5e4d3c2-b1a0-9876-5432-109876abcdef",
+      "area_code": "600001",
+      "scheduled_date": "2026-11-15",
+      "start_time": "07:00:00",
+      "end_time": "11:00:00",
+      "status": "ASSIGNED"
+    }
+  ],
+  "page_number": 0,
+  "page_size": 20,
+  "total_elements": 12,
+  "total_pages": 1,
+  "last": true
+}
