@@ -59,6 +59,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 access_token: validSession.token,
                 token_type: 'Bearer',
                 expires_in: remainingSec,
+                area_code: account.area_code,
+                qr_payload: account.qr_payload,
               };
               setToken(validSession.token);
               setUser(restoredUser);
@@ -105,7 +107,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const login = async (credentials: AuthLoginRequest): Promise<UserSession> => {
     const session = await authService.login(credentials);
-    setUser(session);
+    const storeState = getStoreState();
+    const matchedAccount = storeState.accounts.find((a) => a.user_id === session.user_id);
+
+    const enrichedSession: UserSession = {
+      ...session,
+      area_code: matchedAccount?.area_code,
+      qr_payload: matchedAccount?.qr_payload,
+    };
+
+    setUser(enrichedSession);
     setToken(session.access_token);
 
     if (IS_DEMO && USE_MOCK_API && typeof window !== 'undefined') {
@@ -119,6 +130,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         access_token: session.access_token,
         token_type: session.token_type,
         expires_at: Date.now() + (session.expires_in || 3600) * 1000,
+        area_code: matchedAccount?.area_code,
+        qr_payload: matchedAccount?.qr_payload,
       };
       try {
         sessionStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(minimalSession));
@@ -128,7 +141,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     // In live mode: live access token is kept in memory only; unused refresh token is discarded
 
-    return session;
+    return enrichedSession;
   };
 
   const logout = () => {

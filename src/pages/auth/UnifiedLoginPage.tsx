@@ -1,8 +1,8 @@
 // src/pages/auth/UnifiedLoginPage.tsx
 // Unified Login Page supporting CONSUMER, AGENT, and ADMIN with exact Section 3.1 contracts
 
-import React, { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { UserRole, AuthLoginRequest } from '../../types/contracts';
 import { ENABLE_DEMO_TOOLS } from '../../lib/env';
@@ -20,6 +20,14 @@ export const UnifiedLoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const state = location.state as { registeredMobile?: string } | null;
+    if (state?.registeredMobile) {
+      setMobileNumber(state.registeredMobile);
+      setActiveTab('CONSUMER');
+    }
+  }, [location.state]);
 
   const fromPath = (location.state as { from?: { pathname: string } })?.from?.pathname;
 
@@ -226,6 +234,19 @@ export const UnifiedLoginPage: React.FC = () => {
                 </>
               )}
             </button>
+
+            {activeTab === 'CONSUMER' && (
+              <div className="text-center pt-2">
+                <span className="text-xs text-gray-500">New household resident? </span>
+                <Link
+                  to="/register"
+                  data-testid="register-link"
+                  className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 underline"
+                >
+                  Register here
+                </Link>
+              </div>
+            )}
           </form>
 
           {/* Quick Demo Login (Only in demo mode) */}

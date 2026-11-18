@@ -7,7 +7,13 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { ProtectedRoute } from './components/layout/ProtectedRoute';
 import { AppShell } from './components/layout/AppShell';
 import { UnifiedLoginPage } from './pages/auth/UnifiedLoginPage';
+import { ConsumerRegisterPage } from './pages/auth/ConsumerRegisterPage';
 import { ConsumerDashboard } from './pages/consumer/ConsumerDashboard';
+import { ConsumerSchedulePage } from './pages/consumer/ConsumerSchedulePage';
+import { ConsumerQRPage } from './pages/consumer/ConsumerQRPage';
+import { ConsumerPickupRequestsPage } from './pages/consumer/ConsumerPickupRequestsPage';
+import { ConsumerPaymentsPage } from './pages/consumer/ConsumerPaymentsPage';
+import { ConsumerSupportPage } from './pages/consumer/ConsumerSupportPage';
 import { AgentDashboard } from './pages/agent/AgentDashboard';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
 import './api/mockAdapter'; // Auto-register mock adapter if in demo mode
@@ -36,16 +42,77 @@ const RootRedirect: React.FC = () => {
 export const AppRoutes: React.FC = () => {
   return (
     <Routes>
-      {/* Public Login Route */}
+      {/* Public Routes */}
       <Route path="/login" element={<UnifiedLoginPage />} />
+      <Route path="/register" element={<ConsumerRegisterPage />} />
 
-      {/* Role Protected Consumer Routes */}
+      {/* Role Protected Consumer Routes (Six Screens) */}
       <Route
-        path="/consumer/*"
+        path="/consumer"
         element={
           <ProtectedRoute allowedRoles={['CONSUMER']}>
             <AppShell>
               <ConsumerDashboard />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/consumer/schedule"
+        element={
+          <ProtectedRoute allowedRoles={['CONSUMER']}>
+            <AppShell>
+              <ConsumerSchedulePage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/consumer/schedules"
+        element={
+          <ProtectedRoute allowedRoles={['CONSUMER']}>
+            <AppShell>
+              <ConsumerSchedulePage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/consumer/qr"
+        element={
+          <ProtectedRoute allowedRoles={['CONSUMER']}>
+            <AppShell>
+              <ConsumerQRPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/consumer/requests"
+        element={
+          <ProtectedRoute allowedRoles={['CONSUMER']}>
+            <AppShell>
+              <ConsumerPickupRequestsPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/consumer/payments"
+        element={
+          <ProtectedRoute allowedRoles={['CONSUMER']}>
+            <AppShell>
+              <ConsumerPaymentsPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/consumer/support"
+        element={
+          <ProtectedRoute allowedRoles={['CONSUMER']}>
+            <AppShell>
+              <ConsumerSupportPage />
             </AppShell>
           </ProtectedRoute>
         }

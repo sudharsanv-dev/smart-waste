@@ -183,6 +183,8 @@ export interface UserSession {
   access_token: string;
   token_type: 'Bearer';
   expires_in: number;
+  area_code?: string;
+  qr_payload?: string;
 }
 
 export interface DemoSession {
@@ -194,6 +196,8 @@ export interface DemoSession {
   access_token: string;
   token_type: 'Bearer';
   expires_at: number;
+  area_code?: string;
+  qr_payload?: string;
 }
 
 export interface NotificationsInboxResponse {
@@ -302,6 +306,7 @@ export interface VerifyPaymentRequest {
   razorpay_order_id: string;
   razorpay_payment_id: string;
   razorpay_signature: string;
+  invoice_id?: string;
 }
 
 export interface VerifyPaymentResponse {

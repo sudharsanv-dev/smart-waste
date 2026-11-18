@@ -18,8 +18,10 @@ import {
   PaymentHistoryResponse,
   CreatePickupRequestPayload,
   ManualPickupRequestItem,
+  ManualPickupRequestsResponse,
   CreateSupportTicketRequest,
   SupportTicketItem,
+  SupportTicketsResponse,
   AdminDashboardKPIs,
 } from '../types/contracts';
 
@@ -109,6 +111,14 @@ export const backendGapService = {
   },
 
   // 7. Manual Requests // TODO_BACKEND_SATHEESH
+  async getPickupRequests(): Promise<GapServiceResponse<ManualPickupRequestsResponse>> {
+    if (!IS_DEMO || !USE_MOCK_API) {
+      return getUnavailableResult('GET /api/v1/requests');
+    }
+    const response = await axiosClient.get<ManualPickupRequestsResponse>('/api/v1/requests');
+    return response.data;
+  },
+
   async createPickupRequest(body: CreatePickupRequestPayload): Promise<GapServiceResponse<ManualPickupRequestItem>> {
     if (!IS_DEMO || !USE_MOCK_API) {
       return getUnavailableResult('POST /api/v1/requests');
@@ -118,6 +128,14 @@ export const backendGapService = {
   },
 
   // 8. Support Tickets // TODO_BACKEND_SATHEESH
+  async getSupportTickets(): Promise<GapServiceResponse<SupportTicketsResponse>> {
+    if (!IS_DEMO || !USE_MOCK_API) {
+      return getUnavailableResult('GET /api/v1/support/tickets');
+    }
+    const response = await axiosClient.get<SupportTicketsResponse>('/api/v1/support/tickets');
+    return response.data;
+  },
+
   async createSupportTicket(body: CreateSupportTicketRequest): Promise<GapServiceResponse<SupportTicketItem>> {
     if (!IS_DEMO || !USE_MOCK_API) {
       return getUnavailableResult('POST /api/v1/support/tickets');

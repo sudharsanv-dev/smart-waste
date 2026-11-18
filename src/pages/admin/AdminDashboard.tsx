@@ -5,13 +5,15 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { scheduleService } from '../../api/scheduleService';
 import { notificationService } from '../../api/notificationService';
-import { AdminScheduleItem } from '../../types/contracts';
+import { backendGapService } from '../../api/backendGapService';
+import { AdminScheduleItem, AdminDashboardKPIs } from '../../types/contracts';
 import { LoadingSpinner, EmptyState } from '../../components/layout/LoadingEmptyError';
 import { Calendar, Bell, Users, DollarSign, Send, AlertCircle } from 'lucide-react';
 
 export const AdminDashboard: React.FC = () => {
   const { user } = useAuth();
   const [schedules, setSchedules] = useState<AdminScheduleItem[]>([]);
+  const [kpis, setKpis] = useState<AdminDashboardKPIs | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [broadcastStatus, setBroadcastStatus] = useState<string | null>(null);
 
@@ -19,8 +21,14 @@ export const AdminDashboard: React.FC = () => {
     async function loadData() {
       setIsLoading(true);
       try {
-        const res = await scheduleService.getAdminSchedules({ start_date: '2026-11-15', end_date: '2026-11-30' });
-        setSchedules(res.content || []);
+        const [schedRes, kpiRes] = await Promise.all([
+          scheduleService.getAdminSchedules({ start_date: '2026-11-15', end_date: '2026-11-30' }),
+          backendGapService.getAdminDashboardKPIs(),
+        ]);
+        setSchedules(schedRes.content || []);
+        if (!('unavailable' in kpiRes)) {
+          setKpis(kpiRes);
+        }
       } catch (err) {
         console.error('Failed to load admin schedules:', err);
       } finally {
@@ -70,9 +78,11 @@ export const AdminDashboard: React.FC = () => {
           </div>
           <div>
             <span className="text-xs font-medium text-gray-500">Total Fees Collected</span>
-            <div className="text-xl font-bold text-gray-900 mt-0.5">₹150.00</div>
+            <div className="text-xl font-bold text-gray-900 mt-0.5" data-testid="admin-total-collected">
+              ₹{(kpis?.total_collected ?? 150).toFixed(2)}
+            </div>
             <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded-full inline-block mt-1">
-              October Reconciled
+              Ledger Reconciled
             </span>
           </div>
         </div>
@@ -84,9 +94,11 @@ export const AdminDashboard: React.FC = () => {
           </div>
           <div>
             <span className="text-xs font-medium text-gray-500">Pending Dues</span>
-            <div className="text-xl font-bold text-gray-900 mt-0.5">₹150.00</div>
+            <div className="text-xl font-bold text-gray-900 mt-0.5" data-testid="admin-pending-fees">
+              ₹{(kpis?.pending_fees ?? 150).toFixed(2)}
+            </div>
             <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-2 py-0.5 rounded-full inline-block mt-1">
-              November Current
+              Outstanding Total
             </span>
           </div>
         </div>

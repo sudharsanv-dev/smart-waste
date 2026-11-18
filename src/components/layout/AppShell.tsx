@@ -18,6 +18,7 @@ import {
   Users,
   Settings,
   ShieldAlert,
+  HelpCircle,
 } from 'lucide-react';
 
 export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -34,9 +35,11 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
   const navItems = {
     CONSUMER: [
       { label: 'Dashboard', path: '/consumer', icon: LayoutDashboard },
-      { label: 'Timetable', path: '/consumer/schedules', icon: Calendar },
-      { label: 'Payments', path: '/consumer/payments', icon: CreditCard },
+      { label: 'Timetable', path: '/consumer/schedule', icon: Calendar },
       { label: 'My QR', path: '/consumer/qr', icon: QrCode },
+      { label: 'Requests', path: '/consumer/requests', icon: Truck },
+      { label: 'Payments', path: '/consumer/payments', icon: CreditCard },
+      { label: 'Support', path: '/consumer/support', icon: HelpCircle },
     ],
     AGENT: [
       { label: 'Assignments', path: '/agent', icon: LayoutDashboard },

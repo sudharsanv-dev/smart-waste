@@ -29,6 +29,21 @@ import {
   DeviceTokenRequest,
   AdminNotificationSendRequest,
   AgentNotificationSendRequest,
+  ConsumerRegisterRequest,
+  ConsumerRegisterResponse,
+  ConsumerDashboardResponse,
+  CreatePaymentOrderRequest,
+  CreatePaymentOrderResponse,
+  VerifyPaymentRequest,
+  VerifyPaymentResponse,
+  PaymentHistoryResponse,
+  CreatePickupRequestPayload,
+  ManualPickupRequestItem,
+  ManualPickupRequestsResponse,
+  CreateSupportTicketRequest,
+  SupportTicketItem,
+  SupportTicketsResponse,
+  AdminDashboardKPIs,
 } from '../types/contracts';
 
 let mock: MockAdapter | null = null;
@@ -672,6 +687,349 @@ export function setupMockAdapter(): MockAdapter | null {
       id: notifId,
       status: 'READ',
       updated_at: now,
+    };
+    return [200, res];
+  });
+
+  // =========================================================================
+  // SECTION 4: PROPOSED BACKEND GAP-FILLER MOCK HANDLERS (TODO_BACKEND_SATHEESH)
+  // =========================================================================
+
+  // 1. Consumer Registration (Section 4 // TODO_BACKEND_SATHEESH)
+  mock.onPost('/api/v1/consumers/register').reply((config) => {
+    let body: ConsumerRegisterRequest;
+    try {
+      body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data;
+    } catch {
+      return [400, { success: false, message: 'Invalid JSON payload', statusCode: 400, data: null, errors: { error_code: 'INVALID_JSON' } }];
+    }
+
+    if (!body.name || !body.mobile_number || !body.password || !body.area_code) {
+      return [400, { success: false, message: 'Missing required registration fields', statusCode: 400, data: null, errors: { error_code: 'VALIDATION_ERROR' } }];
+    }
+
+    const state = getStoreState();
+    const existing = state.accounts.find((a) => a.mobile_number === body.mobile_number && a.role === 'CONSUMER');
+    if (existing) {
+      return [400, { success: false, message: 'Mobile number already registered', statusCode: 400, data: null, errors: { error_code: 'DUPLICATE_MOBILE' } }];
+    }
+
+    const newUserId = 'c-' + Math.random().toString(36).substring(2, 9) + '-' + Date.now().toString(36);
+    const rawHex = Math.random().toString(16).substring(2, 10).toUpperCase() + Math.random().toString(16).substring(2, 10).toUpperCase();
+    const opaqueQrPayload = `GPC-QR-CONS-${rawHex}`;
+
+    const newAccount: DemoUserAccount = {
+      user_id: newUserId,
+      name: body.name,
+      mobile_number: body.mobile_number,
+      password: body.password,
+      role: 'CONSUMER',
+      area_code: body.area_code,
+      qr_payload: opaqueQrPayload,
+    };
+
+    const newHousehold = {
+      id: `hh-${Date.now().toString(36)}`,
+      name: body.name,
+      mobile_number: body.mobile_number,
+      email: body.email || '',
+      address: body.address || '',
+      area_code: body.area_code,
+      is_active: true,
+      qr_payload: opaqueQrPayload,
+      created_at: new Date().toISOString(),
+    };
+
+    setStoreState((prev) => ({
+      ...prev,
+      accounts: [...prev.accounts, newAccount],
+      households: [...prev.households, newHousehold],
+    }));
+
+    const res: ConsumerRegisterResponse = {
+      user_id: newUserId,
+      qr_code_payload: opaqueQrPayload,
+      area_code: body.area_code,
+    };
+    return [201, res];
+  });
+
+  // 2. Consumer Dashboard (Section 4 // TODO_BACKEND_SATHEESH)
+  mock.onGet('/api/v1/consumers/me/dashboard').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    const state = getStoreState();
+    const userPayments = state.payments.filter((p) => p.consumer_id === account!.user_id);
+    const unpaidPayments = userPayments.filter((p) => p.status === 'UNPAID');
+    const pendingAmount = unpaidPayments.reduce((sum, p) => sum + p.amount, 0);
+    const dueDate = unpaidPayments[0]?.due_date || '2026-11-30';
+
+    const nextSchedule = state.schedules.find(
+      (s) => s.area_code === account!.area_code && (s.status === 'ASSIGNED' || s.status === 'IN_PROGRESS')
+    );
+
+    const isSeededJohn = account!.user_id === 'c1d2e3f4-a5b6-7890-1234-56789abcdef0';
+    const recentPickups = isSeededJohn
+      ? [
+          {
+            id: 'col-001',
+            date: '2026-11-14',
+            status: 'COLLECTED',
+            agent_name: 'Ramesh Kumar',
+            waste_weight_kg: 3.2,
+          },
+        ]
+      : [];
+
+    const res: ConsumerDashboardResponse = {
+      pending_amount: pendingAmount,
+      due_date: dueDate,
+      next_schedule: nextSchedule || null,
+      qr_payload: account!.qr_payload || 'GPC-QR-CONS-DEFAULT',
+      recent_pickups: recentPickups,
+    };
+    return [200, res];
+  });
+
+  // 5. Payments: Create Order & Verify (Section 4 // TODO_BACKEND_SATHEESH)
+  mock.onPost('/api/v1/payments/create-order').reply((config) => {
+    const { errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    let body: CreatePaymentOrderRequest;
+    try {
+      body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data;
+    } catch {
+      body = { amount: 150 };
+    }
+
+    const res: CreatePaymentOrderResponse = {
+      order_id: `order_rcptid_${Date.now()}`,
+      amount: body.amount || 150,
+      currency: 'INR',
+      key_id: 'rzp_test_greenpulse_demo',
+    };
+    return [200, res];
+  });
+
+  // Payments Verify — Idempotent Single-Settlement Exit Gate
+  mock.onPost('/api/v1/payments/verify').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    let body: VerifyPaymentRequest = { razorpay_order_id: '', razorpay_payment_id: '', razorpay_signature: '' };
+    try {
+      if (typeof config.data === 'string') {
+        body = JSON.parse(config.data);
+      } else if (config.data) {
+        body = config.data;
+      }
+    } catch {
+      // ignore
+    }
+
+    const state = getStoreState();
+    const userPayments = state.payments.filter((p) => p.consumer_id === account!.user_id);
+    const targetInvoice =
+      (body.invoice_id ? userPayments.find((p) => p.invoice_id === body.invoice_id) : null) ||
+      userPayments.find((p) => p.status === 'UNPAID') ||
+      userPayments.find((p) => p.invoice_id === 'inv-2026-11-002') ||
+      userPayments.find((p) => p.status === 'PAID');
+
+    if (!targetInvoice) {
+      return [404, { success: false, message: 'No invoice found for consumer', statusCode: 404, data: null, errors: { error_code: 'INVOICE_NOT_FOUND' } }];
+    }
+
+    const now = new Date().toISOString();
+
+    // IDEMPOTENCY GUARD: If target invoice is already PAID, return existing receipt WITHOUT duplicating ledger records
+    if (targetInvoice.status === 'PAID') {
+      const res: VerifyPaymentResponse = {
+        invoice_id: targetInvoice.invoice_id,
+        status: 'PAID',
+        paid_at: targetInvoice.paid_at || now,
+      };
+      return [200, res];
+    }
+
+    // Atomically settle the UNPAID invoice in the shared store
+    setStoreState((prev) => ({
+      ...prev,
+      payments: prev.payments.map((p) =>
+        p.id === targetInvoice.id
+          ? {
+              ...p,
+              status: 'PAID',
+              paid_at: now,
+              payment_method: 'UPI / Razorpay Simulator',
+            }
+          : p
+      ),
+    }));
+
+    const res: VerifyPaymentResponse = {
+      invoice_id: targetInvoice.invoice_id,
+      status: 'PAID',
+      paid_at: now,
+    };
+    return [200, res];
+  });
+
+  // 6. Fee Collection History (Section 4 // TODO_BACKEND_SATHEESH)
+  mock.onGet('/api/v1/payments/history').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    const state = getStoreState();
+    const params = (config.params || {}) as Record<string, string | undefined>;
+    let userPayments = state.payments.filter((p) => p.consumer_id === account!.user_id);
+
+    if (params.status) {
+      userPayments = userPayments.filter((p) => p.status === params.status);
+    }
+
+    const res: PaymentHistoryResponse = {
+      content: userPayments,
+      page_number: 0,
+      page_size: 20,
+      total_elements: userPayments.length,
+      total_pages: 1,
+      last: true,
+    };
+    return [200, res];
+  });
+
+  // 7. Manual Pickup Requests (Section 4 // TODO_BACKEND_SATHEESH)
+  mock.onGet('/api/v1/requests').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    const state = getStoreState();
+    const userReqs = state.pickupRequests.filter((r) => r.consumer_id === account!.user_id);
+
+    const res: ManualPickupRequestsResponse = {
+      content: userReqs,
+      page_number: 0,
+      page_size: 20,
+      total_elements: userReqs.length,
+      total_pages: 1,
+      last: true,
+    };
+    return [200, res];
+  });
+
+  mock.onPost('/api/v1/requests').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    let body: CreatePickupRequestPayload;
+    try {
+      body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data;
+    } catch {
+      return [400, { success: false, message: 'Invalid JSON payload', statusCode: 400, data: null, errors: { error_code: 'INVALID_JSON' } }];
+    }
+
+    const newReq: ManualPickupRequestItem = {
+      id: `req-${Date.now()}`,
+      consumer_id: account!.user_id,
+      consumer_name: account!.name,
+      consumer_mobile: account!.mobile_number || '',
+      area_code: account!.area_code || '600001',
+      waste_type: body.waste_type,
+      preferred_date: body.preferred_date,
+      address: body.address || 'Registered Address',
+      notes: body.notes || '',
+      status: 'PENDING',
+      created_at: new Date().toISOString(),
+    };
+
+    setStoreState((prev) => ({
+      ...prev,
+      pickupRequests: [newReq, ...prev.pickupRequests],
+    }));
+
+    return [201, newReq];
+  });
+
+  // 8. Help & Support Tickets (Section 4 // TODO_BACKEND_SATHEESH)
+  mock.onGet('/api/v1/support/tickets').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    const state = getStoreState();
+    const userTickets = state.tickets.filter((t) => t.user_id === account!.user_id);
+
+    const res: SupportTicketsResponse = {
+      content: userTickets,
+      page_number: 0,
+      page_size: 20,
+      total_elements: userTickets.length,
+      total_pages: 1,
+      last: true,
+    };
+    return [200, res];
+  });
+
+  mock.onPost('/api/v1/support/tickets').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    let body: CreateSupportTicketRequest;
+    try {
+      body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data;
+    } catch {
+      return [400, { success: false, message: 'Invalid JSON payload', statusCode: 400, data: null, errors: { error_code: 'INVALID_JSON' } }];
+    }
+
+    const now = new Date().toISOString();
+    const newTkt: SupportTicketItem = {
+      ticket_id: `tkt-${Date.now()}`,
+      user_id: account!.user_id,
+      user_name: account!.name,
+      user_role: 'CONSUMER',
+      subject: body.subject,
+      category: body.category,
+      description: body.description,
+      status: 'OPEN',
+      created_at: now,
+      updated_at: now,
+    };
+
+    setStoreState((prev) => ({
+      ...prev,
+      tickets: [newTkt, ...prev.tickets],
+    }));
+
+    return [201, newTkt];
+  });
+
+  // 9. Admin Dashboard KPIs (Section 4 // TODO_BACKEND_SATHEESH)
+  mock.onGet('/api/v1/admin/dashboard').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
+    if (account?.role !== 'ADMIN') {
+      return [403, { success: false, message: 'Access denied: Requires ADMIN role', statusCode: 403, data: null, errors: { error_code: 'FORBIDDEN' } }];
+    }
+
+    const state = getStoreState();
+    const totalCollected = state.payments
+      .filter((p) => p.status === 'PAID')
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const pendingFees = state.payments
+      .filter((p) => p.status === 'UNPAID')
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const coveredAreas = new Set(state.schedules.map((s) => s.area_code)).size;
+    const pendingHouses = state.households.filter((h) => (h as unknown as { status?: string }).status === 'Pending Pickup' || !(h as unknown as { status?: string }).status).length;
+
+    const res: AdminDashboardKPIs = {
+      total_collected: totalCollected,
+      pending_fees: pendingFees,
+      covered_areas: coveredAreas,
+      pending_houses: pendingHouses,
     };
     return [200, res];
   });
