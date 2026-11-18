@@ -10,6 +10,15 @@ Both agents use the same local repository. Check the current HEAD, worktree and 
 
 ## Phase 0
 
+### Codex review of `2fbb1ee`
+
+The 17 fixture and guard tests passed. Two build-mode issues remain open for the Phase 0 follow-up commit.
+
+1. `scripts/verify-env.js` accepted `VITE_API_BASE_URL=http://api.example.test` with both demo flags false. It reads only the process environment and `.env.production`, while Vite can also load local overrides. Validate the effective Vite production environment at build time and require an absolute HTTPS API URL. Exercise the actual build with HTTP, a missing or placeholder URL, and a local override that enables mocks. Include a valid HTTPS configuration as a positive control.
+2. `src/lib/env.ts` uses `import.meta.env.PROD` to identify production mode. An optimized demo build sets this flag too. Importing that module will throw with the planned demo settings. Use the selected Vite mode to distinguish demo and production. Exercise the built demo with the module in use and confirm the page renders with demo features enabled.
+
+Return the follow-up commit and the build results for review.
+
 - Freeze the Section 3 examples in executable contract fixtures. Cover all three login request shapes, the auth envelope, root-level schedule and inbox pagination, and notification methods, bodies and response statuses.
 - Record the Node version and pin compatible dependencies in the lockfile. Record Android Studio and SDK availability. A Git setup issue can block a phase commit while fixture, seed and guard work proceeds.
 - Define the versioned, deterministic demo data and reset behavior specified in Section 5. Keep reset available only in demo mode.
