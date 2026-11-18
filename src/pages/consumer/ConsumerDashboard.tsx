@@ -66,7 +66,7 @@ export const ConsumerDashboard: React.FC = () => {
         </div>
 
         {/* Current Dues Card */}
-        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-start gap-4">
+        <div data-testid="consumer-dues-card" className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-start gap-4">
           <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center flex-shrink-0">
             <CreditCard className="w-5 h-5" />
           </div>
@@ -99,7 +99,7 @@ export const ConsumerDashboard: React.FC = () => {
       </div>
 
       {/* Neighborhood Timetable Preview */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+      <div data-testid="pickup-timetable-card" className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
             <Calendar className="w-4 h-4 text-emerald-600" />

@@ -1,12 +1,14 @@
 // tests/flows/authFlows.test.ts
-// Phase 1 Auth, Session, and Locked Contract Integration Tests
+// Phase 1 Auth, Session Separation, Ownership Enforcement, and Locked Contract Integration Tests
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { authService } from '../../src/api/authService';
 import { scheduleService } from '../../src/api/scheduleService';
 import { notificationService } from '../../src/api/notificationService';
+import { backendGapService } from '../../src/api/backendGapService';
 import { resetDemoData } from '../../src/api/mockStore';
-import { getApiBearerToken } from '../../src/api/axiosClient';
+import { getApiBearerToken, setApiBearerToken } from '../../src/api/axiosClient';
+import * as envModule from '../../src/lib/env';
 import '../../src/api/mockAdapter'; // Ensure mock adapter is wired
 
 describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
@@ -105,33 +107,77 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
       // Interceptor should have cleared the token
       expect(getApiBearerToken()).toBeNull();
     });
+
+    it('honors expires_in on use (expired in-memory token returns null)', () => {
+      // Set a token that expired 1 second ago
+      setApiBearerToken('expired_test_token', -1);
+      expect(getApiBearerToken()).toBeNull();
+    });
   });
 
-  describe('3.2 Locked Schedules Service Flows (C-03)', () => {
-    it('fetches admin schedules with root pagination', async () => {
+  describe('3.2 Locked Schedules Service Flows & Ownership Enforcement (C-03)', () => {
+    it('Admin fetches master schedules with root pagination', async () => {
+      await authService.login({
+        username: 'admin',
+        password: 'Admin@123',
+        type: 'ADMIN',
+      });
+
       const data = await scheduleService.getAdminSchedules();
       expect(Array.isArray(data.content)).toBe(true);
       expect(data.page_number).toBe(0);
-      expect(data.total_elements).toBeGreaterThan(0);
+      expect(data.total_elements).toBe(3); // All 3 master schedules
       expect(data.content[0].area_code).toBeDefined();
     });
 
-    it('fetches agent schedules with root pagination', async () => {
-      const data = await scheduleService.getAgentSchedules();
-      expect(Array.isArray(data.content)).toBe(true);
-      expect(data.page_number).toBe(0);
-      expect(data.total_elements).toBeGreaterThan(0);
+    it('enforces Agent ownership between two different agent accounts', async () => {
+      // 1. Log in as Agent 1 (Ramesh Kumar - area 600001, 600040)
+      await authService.login({
+        mobile_number: '9876543210',
+        password: 'Agent@123',
+        type: 'AGENT',
+      });
+
+      const agent1Data = await scheduleService.getAgentSchedules();
+      expect(agent1Data.content.length).toBe(2);
+      expect(agent1Data.content.map((s) => s.area_code).sort()).toEqual(['600001', '600040']);
+
+      // 2. Log in as Agent 2 (Suresh Babu - area 600002, 600096)
+      await authService.login({
+        mobile_number: '9876543211',
+        password: 'Agent@123',
+        type: 'AGENT',
+      });
+
+      const agent2Data = await scheduleService.getAgentSchedules();
+      expect(agent2Data.content.length).toBe(1);
+      expect(agent2Data.content[0].area_code).toBe('600002');
+
+      // Verify Agent 2 does not see Agent 1's assignments
+      const agent2Areas = agent2Data.content.map((s) => s.area_code);
+      expect(agent2Areas.includes('600001')).toBe(false);
+      expect(agent2Areas.includes('600040')).toBe(false);
     });
 
-    it('fetches consumer neighborhood schedules with root pagination', async () => {
+    it('enforces Consumer permitted neighborhood timetable', async () => {
+      await authService.login({
+        mobile_number: '9876543210',
+        password: 'Consumer@123',
+        type: 'CONSUMER',
+      });
+
+      // Permitted area 600001 returns schedule
       const data = await scheduleService.getConsumerSchedules({ area_code: '600001' });
-      expect(Array.isArray(data.content)).toBe(true);
-      expect(data.page_number).toBe(0);
-      expect(data.total_elements).toBeGreaterThan(0);
+      expect(data.content.length).toBeGreaterThan(0);
+
+      // Unpermitted area 600096 returns 0 elements
+      const unpermitted = await scheduleService.getConsumerSchedules({ area_code: '600096' });
+      expect(unpermitted.content.length).toBe(0);
+      expect(unpermitted.total_elements).toBe(0);
     });
   });
 
-  describe('3.3 Locked Notifications Service Flows (C-04)', () => {
+  describe('3.3 Locked Notifications Service Flows & Ownership Enforcement (C-04)', () => {
     it('registers device token successfully', async () => {
       const res = await notificationService.registerDeviceToken({
         device_id: 'test-device-uuid',
@@ -142,7 +188,13 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
       expect(res.updated_at).toBeDefined();
     });
 
-    it('admin broadcast returns 202 QUEUED and appears in inbox', async () => {
+    it('admin broadcast returns 202 QUEUED and appears in consumer inbox', async () => {
+      await authService.login({
+        username: 'admin',
+        password: 'Admin@123',
+        type: 'ADMIN',
+      });
+
       const res = await notificationService.sendAdminNotification({
         title: 'Emergency Delay',
         body: 'Collection delayed by 30 mins',
@@ -152,34 +204,109 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
       expect(res.status).toBe('QUEUED');
       expect(res.dispatch_id).toBeDefined();
 
+      // Consumer in area 600001 logs in and sees broadcast notification
+      await authService.login({
+        mobile_number: '9876543210',
+        password: 'Consumer@123',
+        type: 'CONSUMER',
+      });
+
       const inbox = await notificationService.getNotifications();
       const found = inbox.content.find((n) => n.title === 'Emergency Delay');
       expect(found).toBeDefined();
       expect(found?.status).toBe('UNREAD');
     });
 
-    it('agent arrival notification returns 202 QUEUED', async () => {
+    it('agent arrival notification returns 202 QUEUED and is delivered to targeted consumer', async () => {
+      await authService.login({
+        mobile_number: '9876543210',
+        password: 'Agent@123',
+        type: 'AGENT',
+      });
+
       const res = await notificationService.sendAgentNotification({
         title: 'Agent Arriving Soon',
         body: 'Truck is approaching your street',
-        target_user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+        target_user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0', // John Doe
       });
       expect(res.status).toBe('QUEUED');
       expect(res.dispatch_id).toBeDefined();
+
+      // Targeted consumer logs in and sees notification
+      await authService.login({
+        mobile_number: '9876543210',
+        password: 'Consumer@123',
+        type: 'CONSUMER',
+      });
+
+      const inbox = await notificationService.getNotifications();
+      const arrival = inbox.content.find((n) => n.body === 'Truck is approaching your street');
+      expect(arrival).toBeDefined();
     });
 
-    it('marks notification as read', async () => {
-      const inbox = await notificationService.getNotifications();
-      const first = inbox.content[0];
-      expect(first).toBeDefined();
+    it('mark-read allows owner to update and rejects non-owner with 403', async () => {
+      // Consumer John Doe logs in and gets his notification ID
+      await authService.login({
+        mobile_number: '9876543210',
+        password: 'Consumer@123',
+        type: 'CONSUMER',
+      });
 
-      const readRes = await notificationService.markNotificationAsRead(first.id);
-      expect(readRes.id).toBe(first.id);
+      const inbox = await notificationService.getNotifications();
+      const targetNotif = inbox.content.find((n) => n.id === 'c3d4e5f6-1234-5678-90ab-cdef12345678');
+      expect(targetNotif).toBeDefined();
+      expect(targetNotif?.status).toBe('UNREAD');
+
+      // Agent 2 (Suresh Babu) logs in and tries to mark John Doe's private notification as read
+      await authService.login({
+        mobile_number: '9876543211',
+        password: 'Agent@123',
+        type: 'AGENT',
+      });
+
+      let agentMarkFailed = false;
+      try {
+        await notificationService.markNotificationAsRead(targetNotif!.id);
+      } catch (err: unknown) {
+        agentMarkFailed = true;
+        const axiosErr = err as { response?: { status?: number; data?: { errors?: { error_code?: string } } } };
+        expect(axiosErr.response?.status).toBe(403);
+        expect(axiosErr.response?.data?.errors?.error_code).toBe('FORBIDDEN');
+      }
+      expect(agentMarkFailed).toBe(true);
+
+      // Now Consumer John Doe logs back in and marks it as read
+      await authService.login({
+        mobile_number: '9876543210',
+        password: 'Consumer@123',
+        type: 'CONSUMER',
+      });
+
+      const readRes = await notificationService.markNotificationAsRead(targetNotif!.id);
+      expect(readRes.id).toBe(targetNotif!.id);
       expect(readRes.status).toBe('READ');
 
       const updatedInbox = await notificationService.getNotifications();
-      const updated = updatedInbox.content.find((n) => n.id === first.id);
+      const updated = updatedInbox.content.find((n) => n.id === targetNotif!.id);
       expect(updated?.status).toBe('READ');
+    });
+  });
+
+  describe('Section 4 Backend Gap Guard (backendGapService.ts)', () => {
+    it('returns explicit unavailable result in live mode before sending network request', async () => {
+      // Simulate live mode
+      const isDemoSpy = vi.spyOn(envModule, 'IS_DEMO', 'get').mockReturnValue(false);
+      const useMockSpy = vi.spyOn(envModule, 'USE_MOCK_API', 'get').mockReturnValue(false);
+
+      try {
+        const result = await backendGapService.getConsumerDashboard();
+        expect(result).toHaveProperty('unavailable', true);
+        expect(result).toHaveProperty('success', false);
+        expect((result as { message: string }).message).toContain('TODO_BACKEND_SATHEESH');
+      } finally {
+        isDemoSpy.mockRestore();
+        useMockSpy.mockRestore();
+      }
     });
   });
 });

@@ -167,6 +167,20 @@ export interface NotificationItem {
   body: string;
   status: 'UNREAD' | 'READ';
   created_at: string;
+  recipient_id?: string;
+  target_type?: NotificationTargetType;
+  target_value?: string;
+}
+
+export interface DemoSession {
+  user_id: string;
+  name?: string;
+  username?: string;
+  mobile_number?: string;
+  role: UserRole;
+  access_token: string;
+  token_type: 'Bearer';
+  expires_at: number;
 }
 
 export interface NotificationsInboxResponse {

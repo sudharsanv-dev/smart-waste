@@ -118,7 +118,7 @@ export const AgentDashboard: React.FC = () => {
       </div>
 
       {/* Assigned Tasks Table */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+      <div data-testid="agent-routes-card" className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
             <Calendar className="w-4 h-4 text-blue-600" />

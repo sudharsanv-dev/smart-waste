@@ -1,5 +1,6 @@
 // src/api/axiosClient.ts
 // Axios instance configured with bearer interceptor, 15s timeout, 401 clearance, and consistent errors
+// Live access tokens kept in memory; minimal fake demo session persisted only in demo mode
 
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { API_BASE_URL, IS_DEMO, USE_MOCK_API } from '../lib/env';
@@ -19,6 +20,7 @@ export const axiosClient = axios.create({
 
 // Event emitter target for 401 unauthorized / session expiry events
 export const AUTH_EXPIRED_EVENT = 'smartwaste:auth_expired';
+export const DEMO_SESSION_KEY = 'smartwaste_demo_session';
 
 export function triggerAuthExpired() {
   if (typeof window !== 'undefined') {
@@ -26,24 +28,74 @@ export function triggerAuthExpired() {
   }
 }
 
-// Memory token storage for interceptor
+// In-memory token storage (authoritative for live mode; honored on use)
 let inMemoryToken: string | null = null;
+let tokenExpiresAt: number | null = null;
 
-export function setApiBearerToken(token: string | null) {
+export function setApiBearerToken(token: string | null, expiresInSeconds?: number) {
   inMemoryToken = token;
+  if (token && typeof expiresInSeconds === 'number') {
+    tokenExpiresAt = Date.now() + expiresInSeconds * 1000;
+  } else if (!token) {
+    tokenExpiresAt = null;
+  }
 }
 
 export function getApiBearerToken(): string | null {
+  // Honor expires_in on use
+  if (tokenExpiresAt !== null && Date.now() >= tokenExpiresAt) {
+    inMemoryToken = null;
+    tokenExpiresAt = null;
+    triggerAuthExpired();
+    return null;
+  }
   return inMemoryToken;
 }
 
-// Request Interceptor: Attach Bearer Token
+export function clearSessionStorage() {
+  if (typeof window !== 'undefined') {
+    try {
+      window.sessionStorage.removeItem(DEMO_SESSION_KEY);
+      window.sessionStorage.removeItem('smartwaste_token');
+      window.sessionStorage.removeItem('smartwaste_user');
+    } catch {
+      // storage unavailable
+    }
+  }
+}
+
+// Request Interceptor: Attach Bearer Token and validate expiration
 axiosClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    const token = inMemoryToken || (typeof window !== 'undefined' ? window.sessionStorage.getItem('smartwaste_token') : null);
+    let token = getApiBearerToken();
+
+    // In demo mode only, restore from demo session storage if in-memory token is absent
+    if (!token && IS_DEMO && USE_MOCK_API && typeof window !== 'undefined') {
+      try {
+        const rawDemo = window.sessionStorage.getItem(DEMO_SESSION_KEY);
+        if (rawDemo) {
+          const demoSession = JSON.parse(rawDemo);
+          if (demoSession?.access_token && demoSession?.expires_at) {
+            if (Date.now() < demoSession.expires_at) {
+              const remainingSec = Math.round((demoSession.expires_at - Date.now()) / 1000);
+              setApiBearerToken(demoSession.access_token, remainingSec);
+              token = demoSession.access_token;
+            } else {
+              // Expired demo session on restore
+              clearSessionStorage();
+              triggerAuthExpired();
+            }
+          }
+        }
+      } catch {
+        clearSessionStorage();
+      }
+    }
+
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+
     return config;
   },
   (error) => Promise.reject(error)
@@ -54,12 +106,9 @@ axiosClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response?.status === 401) {
-      // Clear session token immediately
+      // Clear in-memory token and demo session storage immediately
       setApiBearerToken(null);
-      if (typeof window !== 'undefined') {
-        window.sessionStorage.removeItem('smartwaste_token');
-        window.sessionStorage.removeItem('smartwaste_user');
-      }
+      clearSessionStorage();
       triggerAuthExpired();
     }
 
