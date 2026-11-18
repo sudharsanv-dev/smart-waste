@@ -1,7 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { APP_MODE, USE_MOCK_API, ENABLE_DEMO_TOOLS, OPERATIONAL_TIMEZONE } from './lib/env';
+import { ResetDemoDataControl } from './components/demo/ResetDemoDataControl';
 
 export const App: React.FC = () => {
+  const [, setRefreshKey] = useState(0);
+
   return (
     <div className="flex min-h-screen items-center justify-center p-4 bg-gray-50">
       <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-6 text-center border border-gray-100">
@@ -27,9 +30,14 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        <span className="inline-block bg-emerald-100 text-emerald-800 text-xs px-3 py-1 rounded-full font-semibold" data-testid="status-badge">
-          {APP_MODE === 'demo' ? 'Demo Mode Ready' : 'Production Active'}
-        </span>
+        <div className="flex flex-col gap-3 items-center">
+          <span className="inline-block bg-emerald-100 text-emerald-800 text-xs px-3 py-1 rounded-full font-semibold" data-testid="status-badge">
+            {APP_MODE === 'demo' ? 'Demo Mode Ready' : 'Production Active'}
+          </span>
+
+          {/* Demo-only reset control (hidden strictly in production builds) */}
+          <ResetDemoDataControl onReset={() => setRefreshKey((k) => k + 1)} className="mt-2" />
+        </div>
       </div>
     </div>
   );
