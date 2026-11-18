@@ -12,6 +12,7 @@ import {
   clearSessionStorage,
 } from '../api/axiosClient';
 import { IS_DEMO, USE_MOCK_API } from '../lib/env';
+import { getDemoSession, deleteDemoSession, getStoreState } from '../api/mockStore';
 
 interface AuthContextType {
   user: UserSession | null;
@@ -31,30 +32,46 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // Restore session on initial load (Demo mode only honors persisted minimal fake demo session)
+  // Restore session on initial load
+  // Validates cached token against issued-session registry and derives user/role from matching account
   useEffect(() => {
     try {
       if (IS_DEMO && USE_MOCK_API && typeof window !== 'undefined') {
         const stored = sessionStorage.getItem(DEMO_SESSION_KEY);
         if (stored) {
-          const session = JSON.parse(stored) as DemoSession;
-          // Honor expires_in on restore
-          if (session.expires_at && Date.now() < session.expires_at) {
-            const remainingSec = Math.round((session.expires_at - Date.now()) / 1000);
-            setToken(session.access_token);
-            setUser({
-              user_id: session.user_id,
-              name: session.name,
-              username: session.username,
-              mobile_number: session.mobile_number,
-              role: session.role,
-              access_token: session.access_token,
-              token_type: 'Bearer',
-              expires_in: remainingSec,
-            });
-            setApiBearerToken(session.access_token, remainingSec);
+          const parsed = JSON.parse(stored) as DemoSession;
+          const cachedToken = parsed?.access_token;
+          // Validate the cached token against the issued-session registry
+          const validSession = cachedToken ? getDemoSession(cachedToken) : null;
+
+          if (validSession) {
+            // Derive user and role from the matching account in the store
+            const state = getStoreState();
+            const account = state.accounts.find((a) => a.user_id === validSession.user_id);
+            if (account) {
+              const remainingSec = Math.max(0, Math.round((validSession.expires_at - Date.now()) / 1000));
+              const restoredUser: UserSession = {
+                user_id: account.user_id,
+                name: account.name,
+                username: account.username || (account.role === 'ADMIN' ? 'admin' : undefined),
+                mobile_number: account.mobile_number,
+                role: account.role,
+                access_token: validSession.token,
+                token_type: 'Bearer',
+                expires_in: remainingSec,
+              };
+              setToken(validSession.token);
+              setUser(restoredUser);
+              setApiBearerToken(validSession.token, remainingSec);
+            } else {
+              // Account not found - stale session
+              clearSessionStorage();
+              setToken(null);
+              setUser(null);
+              setApiBearerToken(null);
+            }
           } else {
-            // Expired on restore
+            // Stale, unknown, or expired session in registry
             clearSessionStorage();
             setToken(null);
             setUser(null);
@@ -66,6 +83,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.warn('[AuthContext] Failed to restore session from storage:', e);
       clearSessionStorage();
     } finally {
+      // Clear stale sessions before rendering protected routes
       setIsLoading(false);
     }
   }, []);
@@ -114,6 +132,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const logout = () => {
+    if (token && IS_DEMO && USE_MOCK_API) {
+      deleteDemoSession(token);
+    }
     authService.logout();
     setUser(null);
     setToken(null);

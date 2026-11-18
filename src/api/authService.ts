@@ -1,9 +1,10 @@
 // src/api/authService.ts
 // Locked Section 3.1 Authentication Service
 
-import { axiosClient, setApiBearerToken, clearSessionStorage } from './axiosClient';
+import { axiosClient, setApiBearerToken, getApiBearerToken, clearSessionStorage } from './axiosClient';
 import { AuthLoginRequest, AuthSuccessResponse, AuthSuccessData, UserSession } from '../types/contracts';
 import { IS_DEMO, USE_MOCK_API } from '../lib/env';
+import { deleteDemoSession } from './mockStore';
 
 export const authService = {
   async login(credentials: AuthLoginRequest): Promise<UserSession> {
@@ -31,6 +32,10 @@ export const authService = {
   },
 
   logout(): void {
+    const currentToken = getApiBearerToken();
+    if (currentToken && IS_DEMO && USE_MOCK_API) {
+      deleteDemoSession(currentToken);
+    }
     setApiBearerToken(null);
     clearSessionStorage();
   },

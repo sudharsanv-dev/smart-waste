@@ -3,7 +3,9 @@
 // Supports browser localStorage persistence, cross-tab synchronization, and deterministic reset
 
 import { DemoStoreState, getInitialSeedState, SCHEMA_VERSION } from './mockData';
+import { NotificationItem } from '../types/contracts';
 import { IS_DEMO } from '../lib/env';
+import { clearSessionStorage, triggerAuthExpired } from './axiosClient';
 
 export const DEMO_STORAGE_KEY = `smartwaste_demo_state_v${SCHEMA_VERSION}`;
 
@@ -18,6 +20,58 @@ function isLocalStorageAvailable(): boolean {
   }
 }
 
+// Migration helper: migrates legacy notification format (commit 966e14b) to current schema
+// Preserves recipient identity, existing direct-message read status, and unrelated store data.
+// Safe to run multiple times (idempotent).
+export function migrateDemoState(state: DemoStoreState): DemoStoreState {
+  if (!state || !Array.isArray(state.notifications)) {
+    return state;
+  }
+
+  let mutated = false;
+  const rawList = state.notifications as unknown as Array<Record<string, unknown>>;
+  const migratedNotifications: NotificationItem[] = rawList.map((n) => {
+    const legacyRecipientId = n.recipient_id as string | undefined;
+    const targetUserId = (n.target_user_id as string | undefined) || legacyRecipientId;
+    const hasLegacyField = 'recipient_id' in n;
+
+    const readBy = Array.isArray(n.read_by) ? [...(n.read_by as string[])] : [];
+    if (n.status === 'READ' && targetUserId && !readBy.includes(targetUserId)) {
+      readBy.push(targetUserId);
+    }
+
+    if (hasLegacyField || (targetUserId && !n.target_user_id) || !Array.isArray(n.read_by)) {
+      mutated = true;
+      const { recipient_id: _removed, ...rest } = n;
+      return {
+        ...rest,
+        target_user_id: targetUserId,
+        read_by: readBy,
+      } as unknown as NotificationItem;
+    }
+
+    return n as unknown as NotificationItem;
+  });
+
+  if (mutated) {
+    const updated: DemoStoreState = {
+      ...state,
+      notifications: migratedNotifications,
+    };
+    inMemoryState = updated;
+    if (isLocalStorageAvailable()) {
+      try {
+        window.localStorage.setItem(DEMO_STORAGE_KEY, JSON.stringify(updated));
+      } catch {
+        // ignore
+      }
+    }
+    return updated;
+  }
+
+  return state;
+}
+
 export function getStoreState(): DemoStoreState {
   if (!IS_DEMO) {
     throw new Error('[SECURITY FATAL] mockStore cannot be accessed in production mode.');
@@ -29,8 +83,9 @@ export function getStoreState(): DemoStoreState {
       if (raw) {
         const parsed = JSON.parse(raw) as DemoStoreState;
         if (parsed.version === SCHEMA_VERSION) {
-          inMemoryState = parsed;
-          return parsed;
+          const migrated = migrateDemoState(parsed);
+          inMemoryState = migrated;
+          return migrated;
         }
       }
     } catch (e) {
@@ -49,6 +104,7 @@ export function getStoreState(): DemoStoreState {
     }
   }
 
+  inMemoryState = migrateDemoState(inMemoryState);
   return inMemoryState;
 }
 
@@ -58,7 +114,8 @@ export function setStoreState(updater: DemoStoreState | ((prev: DemoStoreState) 
   }
 
   const prev = getStoreState();
-  const next = typeof updater === 'function' ? updater(prev) : updater;
+  const nextRaw = typeof updater === 'function' ? updater(prev) : updater;
+  const next = migrateDemoState(nextRaw);
   inMemoryState = next;
 
   if (isLocalStorageAvailable()) {
@@ -167,6 +224,8 @@ export function resetDemoData(): DemoStoreState {
   const freshSeed = getInitialSeedState();
   inMemoryState = freshSeed;
   clearDemoSessions();
+  clearSessionStorage();
+  triggerAuthExpired();
 
   if (isLocalStorageAvailable()) {
     try {
