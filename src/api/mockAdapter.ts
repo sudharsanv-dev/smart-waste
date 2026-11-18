@@ -901,11 +901,7 @@ export function setupMockAdapter(): MockAdapter | null {
     }
 
     const targetArea = targetConsumer?.area_code || targetHousehold?.area_code || '';
-    const assignedAreas = new Set([
-      ...(account.assigned_area_codes || []),
-      ...state.schedules.filter((s) => s.assigned_agent_id === account.user_id).map((s) => s.area_code),
-      ...(account.area_code ? [account.area_code] : []),
-    ]);
+    const assignedAreas = getAgentAssignedAreas(state, account.user_id);
 
     if (!targetArea || !assignedAreas.has(targetArea)) {
       return [
@@ -1184,11 +1180,7 @@ export function setupMockAdapter(): MockAdapter | null {
       records = state.payments.filter((p) => p.consumer_id === account!.user_id);
     } else if (account!.role === 'AGENT') {
       // Filtered strictly to agent-authorized records (routes assigned to this agent)
-      const assignedAreas = new Set([
-        ...(account!.assigned_area_codes || []),
-        ...state.schedules.filter((s) => s.assigned_agent_id === account!.user_id).map((s) => s.area_code),
-        ...(account!.area_code ? [account!.area_code] : []),
-      ]);
+      const assignedAreas = getAgentAssignedAreas(state, account!.user_id);
       records = state.payments.filter((p) => assignedAreas.has(p.area_code));
     } else {
       records = state.payments;
@@ -1244,11 +1236,7 @@ export function setupMockAdapter(): MockAdapter | null {
     if (account!.role === 'CONSUMER') {
       reqs = sourceRequests.filter((r) => r.consumer_id === account!.user_id);
     } else if (account!.role === 'AGENT') {
-      const assignedAreas = new Set([
-        ...(account!.assigned_area_codes || []),
-        ...state.schedules.filter((s) => s.assigned_agent_id === account!.user_id).map((s) => s.area_code),
-        ...(account!.area_code ? [account!.area_code] : []),
-      ]);
+      const assignedAreas = getAgentAssignedAreas(state, account!.user_id);
       reqs = sourceRequests.filter((r) => assignedAreas.has(r.area_code));
     } else {
       reqs = sourceRequests;

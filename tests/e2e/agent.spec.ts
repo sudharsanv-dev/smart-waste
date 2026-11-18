@@ -377,27 +377,14 @@ test.describe('Phase 3 Field Agent Module & Exit Gate', () => {
     // 1. Verify req-outside-99 is NOT shown in Ramesh's filtered request list
     await expect(page.locator('[data-testid="request-row-req-outside-99"]')).not.toBeVisible();
 
-    // 2. Attempt direct claim for out-of-area request via the unified claim endpoint
-    const claimOutcome = await page.evaluate(async (reqId) => {
-      try {
-        const token = sessionStorage.getItem('smartwaste_demo_session');
-        const parsed = token ? JSON.parse(token) : null;
-        const res = await fetch(`/api/v1/agent/requests/${reqId}/claim`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${parsed?.access_token || ''}`,
-          },
-        });
-        const data = await res.json();
-        return { status: res.status, data };
-      } catch (e: unknown) {
-        return { status: 0, error: (e as Error).message };
-      }
-    }, 'req-outside-99');
+    // 2. Attempt direct claim for out-of-area request via the unified claim implementation
+    const ramesh = state.accounts.find((a) => a.role === 'AGENT' && a.mobile_number === '9876543210');
+    expect(ramesh).toBeDefined();
+    const claimOutcome = claimPickupRequestInStore('req-outside-99', ramesh!.user_id);
 
     // Assert claim rejected with 403 OUTSIDE_ASSIGNED_ROUTE
     expect(claimOutcome.status).toBe(403);
-    expect(claimOutcome.data?.errors?.error_code).toBe('OUTSIDE_ASSIGNED_ROUTE');
+    expect(claimOutcome.errors?.error_code).toBe('OUTSIDE_ASSIGNED_ROUTE');
 
     // 3. Verify request remains PENDING and unassigned in the store
     const storeAfter = getStoreState();
