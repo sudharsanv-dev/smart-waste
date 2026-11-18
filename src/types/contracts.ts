@@ -292,7 +292,8 @@ export interface AgentScanQRResponse {
 
 // 5. Payments & Razorpay Verify // TODO_BACKEND_SATHEESH
 export interface CreatePaymentOrderRequest {
-  amount: number;
+  amount?: number;
+  invoice_id?: string;
 }
 
 export interface CreatePaymentOrderResponse {
@@ -300,6 +301,7 @@ export interface CreatePaymentOrderResponse {
   amount: number;
   currency: 'INR';
   key_id: string;
+  invoice_id?: string;
 }
 
 export interface VerifyPaymentRequest {

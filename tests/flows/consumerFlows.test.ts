@@ -6,7 +6,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   resetDemoData,
   getStoreState,
+  setStoreState,
   registerDemoSession,
+  getDemoSession,
 } from '../../src/api/mockStore';
 import { setApiBearerToken } from '../../src/api/axiosClient';
 import { consumerService } from '../../src/api/consumerService';
@@ -102,6 +104,82 @@ describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
         })
       ).rejects.toThrow();
     });
+
+    it('persists newly registered household in another ward after login and reload, verifying QR and ward isolation', async () => {
+      // Register household in Ward 600099
+      const reg = await consumerService.register({
+        name: 'Deepa Krishnan',
+        mobile_number: '9876543288',
+        email: 'deepa@example.com',
+        address: '54 Hill Road, Ward 600099',
+        area_code: '600099',
+        password: 'Consumer@123',
+      });
+
+      const token = 'token-deepa-' + Date.now();
+      registerDemoSession({
+        user_id: reg.user_id,
+        role: 'CONSUMER',
+        token,
+        expires_at: Date.now() + 3600000,
+      });
+      setApiBearerToken(token, 3600);
+
+      // Verify dashboard uses its own QR token and not fallback
+      const dashboard = await consumerService.getDashboard();
+      expect(dashboard.qr_payload).toBe(reg.qr_code_payload);
+      expect(dashboard.qr_payload).not.toBe('GPC-QR-CONS-C1D2E3F4A5B67890');
+
+      // Simulate reload: session restored from registry + store
+      const sessionRecord = getDemoSession(token);
+      expect(sessionRecord).toBeDefined();
+      expect(sessionRecord?.user_id).toBe(reg.user_id);
+
+      const state = getStoreState();
+      const account = state.accounts.find((a) => a.user_id === reg.user_id);
+      expect(account?.area_code).toBe('600099');
+      expect(account?.qr_payload).toBe(reg.qr_code_payload);
+    });
+
+    it('handles unavailable QR code and unassigned ward states gracefully', async () => {
+      // Register an account with empty ward and no QR payload
+      const unassignedUserId = 'user-unassigned-' + Date.now();
+      const unassignedToken = 'token-unassigned-' + Date.now();
+
+      setStoreState((prev) => ({
+        ...prev,
+        accounts: [
+          ...prev.accounts,
+          {
+            user_id: unassignedUserId,
+            mobile_number: '9876543200',
+            name: 'Unassigned User',
+            role: 'CONSUMER',
+            area_code: '',
+            qr_payload: '',
+            password: 'Consumer@123',
+            status: 'ACTIVE',
+            created_at: new Date().toISOString(),
+          },
+        ],
+      }));
+
+      registerDemoSession({
+        user_id: unassignedUserId,
+        role: 'CONSUMER',
+        token: unassignedToken,
+        expires_at: Date.now() + 3600000,
+      });
+      setApiBearerToken(unassignedToken, 3600);
+
+      const dashboard = await consumerService.getDashboard();
+      expect(dashboard.qr_payload).toBe('');
+
+      // Attempting to get schedules without area_code returns empty schedules
+      const emptyRes = await consumerService.getSchedules('');
+      expect(emptyRes.content).toEqual([]);
+      expect(emptyRes.total_elements).toBe(0);
+    });
   });
 
   // 2. Area-Filtered Neighborhood Timetable
@@ -153,6 +231,108 @@ describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
       // Unpermitted area 600001 -> returns empty list
       const resUnpermitted2 = await consumerService.getSchedules('600001');
       expect(resUnpermitted2.content).toEqual([]);
+    });
+
+    it('supports schedule pagination beyond the first page and respects date filtering', async () => {
+      const johnToken = 'token-john-sched-pages-' + Date.now();
+      registerDemoSession({
+        user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+        role: 'CONSUMER',
+        token: johnToken,
+        expires_at: Date.now() + 3600000,
+      });
+      setApiBearerToken(johnToken, 3600);
+
+      // Add extra schedules to Ward 600001 so total >= 4
+      const extraSchedules = [
+        {
+          id: 'sched-page-001',
+          area_code: '600001',
+          assigned_agent_id: 'b2c3d4e5-f6a7-8901-2345-67890abcdef1',
+          scheduled_date: '2026-11-20',
+          start_time: '07:00:00',
+          end_time: '09:00:00',
+          status: 'ASSIGNED' as const,
+        },
+        {
+          id: 'sched-page-002',
+          area_code: '600001',
+          assigned_agent_id: 'b2c3d4e5-f6a7-8901-2345-67890abcdef1',
+          scheduled_date: '2026-11-22',
+          start_time: '07:00:00',
+          end_time: '09:00:00',
+          status: 'ASSIGNED' as const,
+        },
+        {
+          id: 'sched-page-003',
+          area_code: '600001',
+          assigned_agent_id: 'b2c3d4e5-f6a7-8901-2345-67890abcdef1',
+          scheduled_date: '2026-11-25',
+          start_time: '07:00:00',
+          end_time: '09:00:00',
+          status: 'ASSIGNED' as const,
+        },
+      ];
+      setStoreState((prev) => ({
+        ...prev,
+        schedules: [...prev.schedules, ...extraSchedules],
+      }));
+
+      // Page 0 with page size 2
+      const page0 = await consumerService.getSchedules({
+        area_code: '600001',
+        page: 0,
+        size: 2,
+      });
+      expect(page0.content).toHaveLength(2);
+      expect(page0.page_number).toBe(0);
+      expect(page0.page_size).toBe(2);
+      expect(page0.total_elements).toBeGreaterThanOrEqual(4);
+      expect(page0.last).toBe(false);
+
+      // Page 1 with page size 2 (matching beyond first page)
+      const page1 = await consumerService.getSchedules({
+        area_code: '600001',
+        page: 1,
+        size: 2,
+      });
+      expect(page1.content).toHaveLength(2);
+      expect(page1.page_number).toBe(1);
+      // Items on page 1 must be distinct from items on page 0
+      const ids0 = page0.content.map((s) => s.id);
+      const ids1 = page1.content.map((s) => s.id);
+      expect(ids0.some((id) => ids1.includes(id))).toBe(false);
+
+      // Filter by start_date = 2026-11-21
+      const filteredByDate = await consumerService.getSchedules({
+        area_code: '600001',
+        start_date: '2026-11-21',
+        page: 0,
+        size: 10,
+      });
+      expect(filteredByDate.content.every((s) => s.scheduled_date >= '2026-11-21')).toBe(true);
+    });
+
+    it('handles consumer account with only past schedules: sets next_schedule to null and derives pickups from stored collections', async () => {
+      // In seed data, John Doe in Ward 600001 has only schedule 2026-11-15 (past relative to current IST time in 2026-11-18)
+      const johnToken = 'token-john-past-sched-' + Date.now();
+      registerDemoSession({
+        user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+        role: 'CONSUMER',
+        token: johnToken,
+        expires_at: Date.now() + 3600000,
+      });
+      setApiBearerToken(johnToken, 3600);
+
+      const dashboard = await consumerService.getDashboard();
+      // Since 2026-11-15 is in the past, earliest upcoming eligible schedule must be null
+      expect(dashboard.next_schedule).toBeNull();
+
+      // Recent pickups must be derived from stored collection records
+      expect(dashboard.recent_pickups).toBeDefined();
+      expect(dashboard.recent_pickups.length).toBeGreaterThan(0);
+      expect(dashboard.recent_pickups[0].agent_name).toBe('Ramesh Kumar');
+      expect(dashboard.recent_pickups[0].waste_weight_kg).toBe(3.2);
     });
   });
 
@@ -235,6 +415,139 @@ describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
         expect(adminDashboard.total_collected).toBe(300);
         expect(adminDashboard.pending_fees).toBe(0);
       }
+    });
+
+    it('manages two unpaid invoices: verifies consumer balance, receipt count, and admin total after each action with mismatched ID rejection and idempotent repetition', async () => {
+      const johnUserId = 'c1d2e3f4-a5b6-7890-1234-56789abcdef0';
+      const token = 'test-token-john-two-invoices-' + Date.now();
+      registerDemoSession({
+        user_id: johnUserId,
+        role: 'CONSUMER',
+        token,
+        expires_at: Date.now() + 3600000,
+      });
+      setApiBearerToken(token, 3600);
+
+      // Add a second unpaid invoice to the store for John Doe
+      const secondInvoice = {
+        id: 'pay-john-extra-002',
+        invoice_id: 'inv-2026-12-003',
+        consumer_id: johnUserId,
+        consumer_name: 'John Doe',
+        area_code: '600001',
+        amount: 250,
+        due_date: '2026-12-31',
+        status: 'UNPAID' as const,
+        created_at: '2026-11-18T10:00:00Z',
+      };
+      setStoreState((prev) => ({
+        ...prev,
+        payments: [...prev.payments, secondInvoice],
+      }));
+
+      // Verify Step 0: Initial State with two unpaid invoices
+      const history0 = await consumerService.getPaymentHistory();
+      const unpaid0 = history0.filter((p) => p.status === 'UNPAID');
+      const paid0 = history0.filter((p) => p.status === 'PAID');
+      expect(unpaid0).toHaveLength(2); // inv-2026-11-002 (₹150) and inv-2026-12-003 (₹250)
+      expect(paid0).toHaveLength(1);   // inv-2026-10-001 (₹150)
+      const balance0 = unpaid0.reduce((sum, p) => sum + p.amount, 0);
+      expect(balance0).toBe(400);
+
+      const state0 = getStoreState();
+      const adminTotal0 = state0.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0);
+      expect(adminTotal0).toBe(150);
+
+      // Step 1: Attempt to create an order without specifying invoice_id when multiple unpaid exist -> rejected
+      await expect(consumerService.createPaymentOrder({})).rejects.toThrow();
+
+      // Step 2: Create order bound to invoice 1 (inv-2026-11-002, amount 150)
+      const order1 = await consumerService.createPaymentOrder({
+        invoice_id: 'inv-2026-11-002',
+        amount: 150,
+      });
+      expect(order1.order_id).toBeDefined();
+      expect(order1.amount).toBe(150);
+      expect(order1.invoice_id).toBe('inv-2026-11-002');
+
+      // Step 3: Attempt verification with MISMATCHED invoice ID (inv-2026-12-003) -> must fail, leave balances unchanged
+      await expect(
+        consumerService.verifyPayment(order1.order_id, 'pay_mismatch', 'sig_mismatch', 'inv-2026-12-003')
+      ).rejects.toThrow();
+
+      // Balances must be byte-for-byte unchanged
+      const historyAfterMismatch = await consumerService.getPaymentHistory();
+      expect(historyAfterMismatch.filter((p) => p.status === 'UNPAID')).toHaveLength(2);
+      expect(historyAfterMismatch.filter((p) => p.status === 'PAID')).toHaveLength(1);
+      const stateAfterMismatch = getStoreState();
+      expect(stateAfterMismatch.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0)).toBe(150);
+
+      // Step 4: Attempt verification with NON-EXISTENT order ID -> must fail, leave balances unchanged
+      await expect(
+        consumerService.verifyPayment('order_nonexistent_999', 'pay_fake', 'sig_fake', 'inv-2026-11-002')
+      ).rejects.toThrow();
+
+      // Step 5: Verify order 1 with exact invoice match -> SUCCESS
+      const verifyRes1 = await consumerService.verifyPayment(
+        order1.order_id,
+        'pay_valid_1',
+        'sig_valid_1',
+        'inv-2026-11-002'
+      );
+      expect(verifyRes1.status).toBe('PAID');
+      expect(verifyRes1.invoice_id).toBe('inv-2026-11-002');
+
+      // Check balances after settling invoice 1:
+      // Consumer pending dues drops to ₹250, paid receipts count = 2
+      const history1 = await consumerService.getPaymentHistory();
+      const unpaid1 = history1.filter((p) => p.status === 'UNPAID');
+      const paid1 = history1.filter((p) => p.status === 'PAID');
+      expect(unpaid1).toHaveLength(1);
+      expect(unpaid1[0].invoice_id).toBe('inv-2026-12-003');
+      expect(unpaid1[0].amount).toBe(250);
+      expect(paid1).toHaveLength(2);
+      const state1 = getStoreState();
+      const adminTotal1 = state1.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0);
+      expect(adminTotal1).toBe(300); // Increased from 150 to 300
+
+      // Step 6: Repeat verification of order 1 -> MUST return the same receipt without mutating ledger
+      const repeatRes1 = await consumerService.verifyPayment(
+        order1.order_id,
+        'pay_repeat_1',
+        'sig_repeat_1',
+        'inv-2026-11-002'
+      );
+      expect(repeatRes1.status).toBe('PAID');
+      expect(repeatRes1.invoice_id).toBe('inv-2026-11-002');
+
+      const historyAfterRepeat = await consumerService.getPaymentHistory();
+      expect(historyAfterRepeat.filter((p) => p.status === 'UNPAID')).toHaveLength(1);
+      expect(historyAfterRepeat.filter((p) => p.status === 'PAID')).toHaveLength(2);
+      const stateAfterRepeat = getStoreState();
+      expect(stateAfterRepeat.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0)).toBe(300);
+
+      // Step 7: Create and verify order for second invoice (inv-2026-12-003, amount 250)
+      const order2 = await consumerService.createPaymentOrder({
+        invoice_id: 'inv-2026-12-003',
+        amount: 250,
+      });
+      const verifyRes2 = await consumerService.verifyPayment(
+        order2.order_id,
+        'pay_valid_2',
+        'sig_valid_2',
+        'inv-2026-12-003'
+      );
+      expect(verifyRes2.status).toBe('PAID');
+      expect(verifyRes2.invoice_id).toBe('inv-2026-12-003');
+
+      // Check final balances:
+      // All unpaid invoices cleared (0), paid receipts count = 3, admin total collected = ₹550
+      const historyFinal = await consumerService.getPaymentHistory();
+      expect(historyFinal.filter((p) => p.status === 'UNPAID')).toHaveLength(0);
+      expect(historyFinal.filter((p) => p.status === 'PAID')).toHaveLength(3);
+      const stateFinal = getStoreState();
+      const adminTotalFinal = stateFinal.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0);
+      expect(adminTotalFinal).toBe(550);
     });
   });
 

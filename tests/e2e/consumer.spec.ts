@@ -52,10 +52,11 @@ test.describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
     // Verify Data Isolation: Newly registered consumer has ₹0.00 dues (separate from John Doe's ₹150)
     await expect(page.locator('[data-testid="consumer-pending-dues"]')).toContainText('₹0.00');
 
-    // 6. Navigate to Timetable / Schedule Screen
+    // 6. Navigate to Timetable / Schedule Screen & Test Pagination Controls
     await page.goto('/consumer/schedule');
     await expect(page.locator('[data-testid="consumer-schedule-page"]')).toBeVisible();
     await expect(page.locator('[data-testid="consumer-schedules-table"]')).toBeVisible();
+    await expect(page.locator('[data-testid="page-indicator"]')).toBeVisible();
 
     // 7. Navigate to QR Placard Screen
     await page.goto('/consumer/qr');
@@ -63,6 +64,18 @@ test.describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
     await expect(page.locator('#consumer-qr-svg')).toBeVisible();
     const qrDisplay = await page.locator('[data-testid="consumer-qr-token-value"]').textContent();
     expect(qrDisplay?.trim()).toBe(tokenText?.trim());
+
+    // Test Placard SVG Download
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('[data-testid="download-qr-btn"]').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe('GreenPulse-Household-QR-600001.svg');
+
+    // Test Reload Persistence: Token and Area Code remain intact after reload
+    await page.reload();
+    await expect(page.locator('[data-testid="consumer-qr-page"]')).toBeVisible();
+    const reloadedQr = await page.locator('[data-testid="consumer-qr-token-value"]').textContent();
+    expect(reloadedQr?.trim()).toBe(tokenText?.trim());
 
     // 8. Test Fullscreen Bright-View Modal
     await page.locator('[data-testid="fullscreen-qr-toggle"]').click();
@@ -100,12 +113,20 @@ test.describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
     await expect(page.locator('[data-testid="receipt-invoice-id"]')).toContainText('inv-2026-11-002');
     await expect(page.locator('[data-testid="receipt-amount"]')).toContainText('₹150.00');
 
+    // Test print and download actions
+    await expect(page.locator('[data-testid="print-receipt-btn"]')).toBeVisible();
+    const receiptDownloadPromise = page.waitForEvent('download');
+    await page.locator('[data-testid="download-receipt-btn"]').click();
+    const receiptDownload = await receiptDownloadPromise;
+    expect(receiptDownload.suggestedFilename()).toBe('Receipt-inv-2026-11-002.txt');
+
     // Close Receipt Modal
     await page.locator('[data-testid="close-receipt-btn"]').click();
     await expect(page.locator('[data-testid="payment-receipt"]')).not.toBeVisible();
 
-    // 5. Assert outstanding balance is now ₹0.00
+    // 5. Assert outstanding balance is now ₹0.00 and All Dues Cleared badge is visible
     await expect(page.locator('[data-testid="consumer-pending-dues"]')).toContainText('₹0.00');
+    await expect(page.locator('[data-testid="dues-cleared-badge"]')).toBeVisible();
 
     // 6. Assert Payment History table: inv-2026-11-002 is marked PAID and appears EXACTLY ONCE
     const rows = page.locator('[data-testid="payment-row-inv-2026-11-002"]');

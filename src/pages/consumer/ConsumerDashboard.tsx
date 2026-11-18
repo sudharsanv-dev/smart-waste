@@ -1,43 +1,48 @@
 // src/pages/consumer/ConsumerDashboard.tsx
 // Screen 1: Consumer Dashboard Overview (Phase 2)
 // Dues in INR, next collection, recent collections, and quick actions from shared state
+// Robust error handling with Retry, strict profile data binding, and Asia/Kolkata upcoming schedule
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { consumerService } from '../../api/consumerService';
 import { ConsumerDashboardResponse } from '../../types/contracts';
 import { LoadingSpinner, EmptyState } from '../../components/layout/LoadingEmptyError';
-import { QrCode, Calendar, CreditCard, Clock, Truck, HelpCircle, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { QrCode, Calendar, CreditCard, Clock, Truck, HelpCircle, ArrowRight, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 
 export const ConsumerDashboard: React.FC = () => {
   const { user } = useAuth();
   const [data, setData] = useState<ConsumerDashboardResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadDashboard = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await consumerService.getDashboard();
+      setData(res);
+      setIsLoaded(true);
+    } catch (err) {
+      console.error('Failed to load consumer dashboard:', err);
+      setError('Unable to load household dues and dashboard data. Please try again.');
+      setIsLoaded(false);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function loadDashboard() {
-      setIsLoading(true);
-      try {
-        const res = await consumerService.getDashboard();
-        setData(res);
-      } catch (err) {
-        console.error('Failed to load consumer dashboard:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
     loadDashboard();
-  }, [user]);
-
-  if (isLoading) {
-    return <LoadingSpinner label="Loading dashboard data..." />;
-  }
+  }, [loadDashboard, user]);
 
   const pendingAmount = data?.pending_amount ?? 0;
   const nextSchedule = data?.next_schedule;
   const recentPickups = data?.recent_pickups || [];
-  const qrPayload = data?.qr_payload || user?.qr_payload || 'GPC-QR-CONS-DEFAULT';
+  const qrPayload = user?.qr_payload || data?.qr_payload || '';
+  const areaCode = user?.area_code || (data?.next_schedule ? data.next_schedule.id : '');
 
   return (
     <div className="space-y-6" data-testid="consumer-dashboard">
@@ -50,9 +55,28 @@ export const ConsumerDashboard: React.FC = () => {
           Welcome back, {user?.name || 'Resident'}
         </h1>
         <p className="text-xs text-emerald-100 mt-1">
-          Ward: <span className="font-semibold">{user?.area_code || '600001'}</span> • GreenPulse City Smart Sanitation
+          Ward: <span className="font-semibold">{areaCode || 'Ward Not Assigned'}</span> • GreenPulse City Smart Sanitation
         </p>
       </div>
+
+      {/* Global Error Banner */}
+      {error && (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-xs text-rose-900 flex items-center justify-between gap-3" data-testid="dashboard-error-banner">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={loadDashboard}
+            data-testid="retry-dashboard-btn"
+            className="inline-flex items-center gap-1 px-3 py-1 bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 font-semibold rounded-lg text-xs transition-colors flex-shrink-0"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Retry</span>
+          </button>
+        </div>
+      )}
 
       {/* KPI Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -64,7 +88,11 @@ export const ConsumerDashboard: React.FC = () => {
             </div>
             <div>
               <span className="text-xs font-medium text-gray-500">Next Scheduled Collection</span>
-              {nextSchedule ? (
+              {isLoading ? (
+                <div className="py-2">
+                  <LoadingSpinner size="sm" label="Checking timetable..." />
+                </div>
+              ) : nextSchedule ? (
                 <>
                   <div className="text-base font-bold text-gray-900 mt-0.5" data-testid="next-pickup-date">
                     {nextSchedule.scheduled_date}
@@ -80,8 +108,8 @@ export const ConsumerDashboard: React.FC = () => {
                   </span>
                 </>
               ) : (
-                <div className="text-xs text-gray-500 mt-2">
-                  No upcoming collections scheduled for your ward.
+                <div className="text-xs text-gray-500 mt-2" data-testid="no-upcoming-pickup">
+                  No upcoming collections scheduled for your neighborhood.
                 </div>
               )}
             </div>
@@ -107,18 +135,44 @@ export const ConsumerDashboard: React.FC = () => {
             </div>
             <div>
               <span className="text-xs font-medium text-gray-500">Outstanding Waste Dues</span>
-              <div className="text-2xl font-bold text-gray-900 mt-0.5" data-testid="consumer-pending-dues">
-                ₹{pendingAmount.toFixed(2)}
-              </div>
-              {pendingAmount > 0 ? (
-                <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-800 rounded-full">
-                  Due by {data?.due_date || 'Nov 30, 2026'}
-                </span>
+              {isLoading ? (
+                <div className="py-2">
+                  <LoadingSpinner size="sm" label="Fetching dues..." />
+                </div>
+              ) : error ? (
+                <div className="mt-1 space-y-1.5" data-testid="dues-error-container">
+                  <div className="text-xs text-rose-600 font-semibold flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    <span>Failed to load dues</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={loadDashboard}
+                    data-testid="retry-dues-btn"
+                    className="px-2.5 py-1 text-[11px] font-semibold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 rounded-md transition-colors"
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : (
-                <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800 rounded-full">
-                  <CheckCircle2 className="w-3 h-3" />
-                  <span>All Dues Cleared</span>
-                </span>
+                <>
+                  <div className="text-2xl font-bold text-gray-900 mt-0.5" data-testid="consumer-pending-dues">
+                    ₹{pendingAmount.toFixed(2)}
+                  </div>
+                  {pendingAmount > 0 ? (
+                    <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-800 rounded-full">
+                      Due by {data?.due_date || 'Nov 30, 2026'}
+                    </span>
+                  ) : isLoaded ? (
+                    <span
+                      data-testid="all-dues-cleared-badge"
+                      className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800 rounded-full"
+                    >
+                      <CheckCircle2 className="w-3 h-3" />
+                      <span>All Dues Cleared</span>
+                    </span>
+                  ) : null}
+                </>
               )}
             </div>
           </div>
@@ -141,12 +195,20 @@ export const ConsumerDashboard: React.FC = () => {
             </div>
             <div>
               <span className="text-xs font-medium text-gray-500">Household QR Token</span>
-              <div className="text-xs font-mono font-bold text-gray-900 mt-1 break-all" data-testid="consumer-qr-token">
-                {qrPayload}
-              </div>
-              <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-semibold bg-purple-100 text-purple-800 rounded-full">
-                Ready for Agent Scan
-              </span>
+              {qrPayload ? (
+                <>
+                  <div className="text-xs font-mono font-bold text-gray-900 mt-1 break-all" data-testid="consumer-qr-token">
+                    {qrPayload}
+                  </div>
+                  <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-semibold bg-purple-100 text-purple-800 rounded-full">
+                    Ready for Agent Scan
+                  </span>
+                </>
+              ) : (
+                <div className="text-xs text-amber-700 mt-1 font-semibold" data-testid="qr-not-allocated">
+                  QR Not Allocated
+                </div>
+              )}
             </div>
           </div>
           <div className="mt-4 pt-3 border-t border-gray-50">
@@ -154,7 +216,7 @@ export const ConsumerDashboard: React.FC = () => {
               to="/consumer/qr"
               className="text-xs font-semibold text-purple-600 hover:text-purple-700 flex items-center gap-1"
             >
-              <span>Display fullscreen QR</span>
+              <span>{qrPayload ? 'Display fullscreen QR' : 'View QR profile'}</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>

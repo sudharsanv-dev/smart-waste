@@ -12,6 +12,9 @@ import {
   getDemoSession,
   deleteDemoSession,
   DemoSessionRecord,
+  registerPaymentOrder,
+  getPaymentOrder,
+  updatePaymentOrder,
 } from './mockStore';
 import { DemoUserAccount } from './mockData';
 import {
@@ -36,6 +39,7 @@ import {
   CreatePaymentOrderResponse,
   VerifyPaymentRequest,
   VerifyPaymentResponse,
+  PaymentHistoryItem,
   PaymentHistoryResponse,
   CreatePickupRequestPayload,
   ManualPickupRequestItem,
@@ -374,11 +378,11 @@ export function setupMockAdapter(): MockAdapter | null {
     }
 
     const state = getStoreState();
-    const params = (config.params || {}) as Record<string, string | undefined>;
-    const permittedArea = account.area_code || '600001';
+    const params = (config.params || {}) as Record<string, string | number | undefined>;
+    const permittedArea = account.area_code;
 
-    // Enforce permitted area: If consumer requests an unpermitted area, return empty content
-    if (params.area_code && params.area_code !== permittedArea) {
+    // Enforce permitted area: If consumer profile has no area or requests an unpermitted area, return empty content
+    if (!permittedArea || (params.area_code && params.area_code !== permittedArea)) {
       const res: ConsumerSchedulesResponse = {
         content: [],
         page_number: 0,
@@ -391,12 +395,15 @@ export function setupMockAdapter(): MockAdapter | null {
     }
 
     let filtered = state.schedules.filter((s) => s.area_code === permittedArea);
-    if (params.start_date) {
-      filtered = filtered.filter((s) => s.scheduled_date >= params.start_date!);
+    if (params.start_date && typeof params.start_date === 'string') {
+      filtered = filtered.filter((s) => s.scheduled_date >= (params.start_date as string));
     }
-    if (params.end_date) {
-      filtered = filtered.filter((s) => s.scheduled_date <= params.end_date!);
+    if (params.end_date && typeof params.end_date === 'string') {
+      filtered = filtered.filter((s) => s.scheduled_date <= (params.end_date as string));
     }
+
+    // Sort by scheduled_date ASC, start_time ASC
+    filtered.sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date) || a.start_time.localeCompare(b.start_time));
 
     const page = Math.max(0, Number(params.page) || 0);
     const size = Math.max(1, Number(params.size) || 10);
@@ -765,28 +772,54 @@ export function setupMockAdapter(): MockAdapter | null {
     const pendingAmount = unpaidPayments.reduce((sum, p) => sum + p.amount, 0);
     const dueDate = unpaidPayments[0]?.due_date || '2026-11-30';
 
-    const nextSchedule = state.schedules.find(
-      (s) => s.area_code === account!.area_code && (s.status === 'ASSIGNED' || s.status === 'IN_PROGRESS')
-    );
+    // Earliest eligible upcoming pickup using Asia/Kolkata timezone
+    const nowIST = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+    const nowTimeIST = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(new Date());
 
-    const isSeededJohn = account!.user_id === 'c1d2e3f4-a5b6-7890-1234-56789abcdef0';
-    const recentPickups = isSeededJohn
-      ? [
-          {
-            id: 'col-001',
-            date: '2026-11-14',
-            status: 'COLLECTED',
-            agent_name: 'Ramesh Kumar',
-            waste_weight_kg: 3.2,
-          },
-        ]
+    const permittedArea = account!.area_code;
+    const eligibleUpcoming = permittedArea
+      ? state.schedules
+          .filter(
+            (s) =>
+              s.area_code === permittedArea &&
+              (s.status === 'ASSIGNED' || s.status === 'IN_PROGRESS') &&
+              (s.scheduled_date > nowIST || (s.scheduled_date === nowIST && s.end_time >= nowTimeIST))
+          )
+          .sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date) || a.start_time.localeCompare(b.start_time))
       : [];
+
+    const nextSchedule = eligibleUpcoming[0] || null;
+
+    // Derive recent pickups strictly from stored collection records
+    const userCollections = (state.collections || []).filter(
+      (c) =>
+        c.consumer_id === account!.user_id ||
+        (account!.qr_payload && c.qr_payload === account!.qr_payload)
+    );
+    const recentPickups = userCollections.map((c) => ({
+      id: c.id,
+      date: c.date,
+      status: c.status,
+      agent_name: c.agent_name,
+      waste_weight_kg: c.waste_weight_kg,
+    }));
 
     const res: ConsumerDashboardResponse = {
       pending_amount: pendingAmount,
       due_date: dueDate,
-      next_schedule: nextSchedule || null,
-      qr_payload: account!.qr_payload || 'GPC-QR-CONS-DEFAULT',
+      next_schedule: nextSchedule,
+      qr_payload: account!.qr_payload || '',
       recent_pickups: recentPickups,
     };
     return [200, res];
@@ -794,21 +827,85 @@ export function setupMockAdapter(): MockAdapter | null {
 
   // 5. Payments: Create Order & Verify (Section 4 // TODO_BACKEND_SATHEESH)
   mock.onPost('/api/v1/payments/create-order').reply((config) => {
-    const { errorResponse } = resolveAccount(config);
+    const { account, errorResponse } = resolveAccount(config);
     if (errorResponse) return errorResponse;
 
     let body: CreatePaymentOrderRequest;
     try {
-      body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data;
+      body = typeof config.data === 'string' ? JSON.parse(config.data) : (config.data || {});
     } catch {
-      body = { amount: 150 };
+      body = {};
     }
 
-    const res: CreatePaymentOrderResponse = {
-      order_id: `order_rcptid_${Date.now()}`,
-      amount: body.amount || 150,
+    const state = getStoreState();
+    const userPayments = state.payments.filter((p) => p.consumer_id === account!.user_id);
+    const unpaidInvoices = userPayments.filter((p) => p.status === 'UNPAID');
+
+    let targetInvoice: PaymentHistoryItem | undefined;
+    if (body.invoice_id) {
+      targetInvoice = unpaidInvoices.find((p) => p.invoice_id === body.invoice_id);
+      if (!targetInvoice) {
+        return [
+          404,
+          {
+            success: false,
+            message: `Unpaid invoice "${body.invoice_id}" not found for signed-in consumer`,
+            statusCode: 404,
+            data: null,
+            errors: { error_code: 'INVOICE_NOT_FOUND' },
+          },
+        ];
+      }
+    } else {
+      if (unpaidInvoices.length === 1) {
+        targetInvoice = unpaidInvoices[0];
+      } else if (unpaidInvoices.length === 0) {
+        return [
+          404,
+          {
+            success: false,
+            message: 'No unpaid invoices found for consumer',
+            statusCode: 404,
+            data: null,
+            errors: { error_code: 'NO_UNPAID_INVOICES' },
+          },
+        ];
+      } else {
+        return [
+          400,
+          {
+            success: false,
+            message: 'Multiple unpaid invoices exist. Specific invoice_id must be provided.',
+            statusCode: 400,
+            data: null,
+            errors: { error_code: 'INVOICE_REQUIRED' },
+          },
+        ];
+      }
+    }
+
+    // Amount bound strictly to the unpaid invoice from the ledger
+    const boundAmount = targetInvoice.amount;
+    const orderId = `order_${targetInvoice.invoice_id}_${Date.now()}`;
+
+    registerPaymentOrder({
+      order_id: orderId,
+      invoice_id: targetInvoice.invoice_id,
+      consumer_id: account!.user_id,
+      amount: boundAmount,
       currency: 'INR',
       key_id: 'rzp_test_greenpulse_demo',
+      status: 'CREATED',
+      receipt_id: `rcpt_${targetInvoice.invoice_id}`,
+      created_at: new Date().toISOString(),
+    });
+
+    const res: CreatePaymentOrderResponse = {
+      order_id: orderId,
+      amount: boundAmount,
+      currency: 'INR',
+      key_id: 'rzp_test_greenpulse_demo',
+      invoice_id: targetInvoice.invoice_id,
     };
     return [200, res];
   });
@@ -829,31 +926,71 @@ export function setupMockAdapter(): MockAdapter | null {
       // ignore
     }
 
+    // 1. Validate order exists and belongs to signed-in consumer
+    const registeredOrder = getPaymentOrder(body.razorpay_order_id);
+    if (!registeredOrder || registeredOrder.consumer_id !== account!.user_id) {
+      return [
+        400,
+        {
+          success: false,
+          message: 'Order ID is invalid, missing, or belongs to another consumer. Balances unchanged.',
+          statusCode: 400,
+          data: null,
+          errors: { error_code: 'INVALID_ORDER' },
+        },
+      ];
+    }
+
+    // 2. Validate invoice ID match if provided
+    if (body.invoice_id && body.invoice_id !== registeredOrder.invoice_id) {
+      return [
+        400,
+        {
+          success: false,
+          message: 'Invoice ID does not match the bound payment order. Balances unchanged.',
+          statusCode: 400,
+          data: null,
+          errors: { error_code: 'INVOICE_MISMATCH' },
+        },
+      ];
+    }
+
     const state = getStoreState();
-    const userPayments = state.payments.filter((p) => p.consumer_id === account!.user_id);
-    const targetInvoice =
-      (body.invoice_id ? userPayments.find((p) => p.invoice_id === body.invoice_id) : null) ||
-      userPayments.find((p) => p.status === 'UNPAID') ||
-      userPayments.find((p) => p.invoice_id === 'inv-2026-11-002') ||
-      userPayments.find((p) => p.status === 'PAID');
+    const targetInvoice = state.payments.find(
+      (p) => p.invoice_id === registeredOrder.invoice_id && p.consumer_id === account!.user_id
+    );
 
     if (!targetInvoice) {
-      return [404, { success: false, message: 'No invoice found for consumer', statusCode: 404, data: null, errors: { error_code: 'INVOICE_NOT_FOUND' } }];
+      return [
+        404,
+        {
+          success: false,
+          message: 'Target invoice not found in ledger. Balances unchanged.',
+          statusCode: 404,
+          data: null,
+          errors: { error_code: 'INVOICE_NOT_FOUND' },
+        },
+      ];
     }
 
     const now = new Date().toISOString();
 
-    // IDEMPOTENCY GUARD: If target invoice is already PAID, return existing receipt WITHOUT duplicating ledger records
-    if (targetInvoice.status === 'PAID') {
+    // 3. Repeating a successful confirmation must return the same receipt
+    if (targetInvoice.status === 'PAID' || registeredOrder.status === 'PAID') {
       const res: VerifyPaymentResponse = {
         invoice_id: targetInvoice.invoice_id,
         status: 'PAID',
-        paid_at: targetInvoice.paid_at || now,
+        paid_at: targetInvoice.paid_at || registeredOrder.paid_at || now,
       };
       return [200, res];
     }
 
-    // Atomically settle the UNPAID invoice in the shared store
+    // 4. Atomically settle the UNPAID invoice in the shared store
+    updatePaymentOrder(registeredOrder.order_id, {
+      status: 'PAID',
+      paid_at: now,
+    });
+
     setStoreState((prev) => ({
       ...prev,
       payments: prev.payments.map((p) =>

@@ -216,6 +216,84 @@ export function clearDemoSessions(): void {
   }
 }
 
+// Payment orders registry bound to signed-in consumer, unpaid invoice, and ledger amount
+export interface ActivePaymentOrder {
+  order_id: string;
+  invoice_id: string;
+  consumer_id: string;
+  amount: number;
+  currency: 'INR';
+  key_id: string;
+  status: 'CREATED' | 'PAID';
+  receipt_id: string;
+  paid_at?: string;
+  created_at: string;
+}
+
+export const ORDERS_STORAGE_KEY = `smartwaste_demo_orders_v${SCHEMA_VERSION}`;
+let inMemoryOrders = new Map<string, ActivePaymentOrder>();
+
+function loadOrders(): Map<string, ActivePaymentOrder> {
+  if (isLocalStorageAvailable()) {
+    try {
+      const raw = window.localStorage.getItem(ORDERS_STORAGE_KEY);
+      if (raw) {
+        const list = JSON.parse(raw) as ActivePaymentOrder[];
+        const map = new Map<string, ActivePaymentOrder>();
+        list.forEach((o) => map.set(o.order_id, o));
+        inMemoryOrders = map;
+        return map;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return inMemoryOrders;
+}
+
+function saveOrders(): void {
+  if (isLocalStorageAvailable()) {
+    try {
+      const list = Array.from(inMemoryOrders.values());
+      window.localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(list));
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export function registerPaymentOrder(order: ActivePaymentOrder): void {
+  loadOrders();
+  inMemoryOrders.set(order.order_id, order);
+  saveOrders();
+}
+
+export function getPaymentOrder(orderId: string): ActivePaymentOrder | undefined {
+  loadOrders();
+  return inMemoryOrders.get(orderId);
+}
+
+export function updatePaymentOrder(orderId: string, updates: Partial<ActivePaymentOrder>): void {
+  loadOrders();
+  const existing = inMemoryOrders.get(orderId);
+  if (existing) {
+    const updated = { ...existing, ...updates };
+    inMemoryOrders.set(orderId, updated);
+    saveOrders();
+  }
+}
+
+export function clearPaymentOrders(): void {
+  inMemoryOrders.clear();
+  if (isLocalStorageAvailable()) {
+    try {
+      window.localStorage.removeItem(ORDERS_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export function resetDemoData(): DemoStoreState {
   if (!IS_DEMO) {
     throw new Error('[SECURITY FATAL] Reset Demo Data is disabled in production mode.');
@@ -224,6 +302,7 @@ export function resetDemoData(): DemoStoreState {
   const freshSeed = getInitialSeedState();
   inMemoryState = freshSeed;
   clearDemoSessions();
+  clearPaymentOrders();
   clearSessionStorage();
   triggerAuthExpired();
 

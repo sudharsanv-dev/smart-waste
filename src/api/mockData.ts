@@ -29,6 +29,20 @@ export interface DemoUserAccount {
   qr_payload?: string;
 }
 
+export interface StoredCollectionRecord {
+  id: string;
+  consumer_id: string;
+  household_id?: string;
+  qr_payload?: string;
+  date: string;
+  timestamp: string;
+  status: 'COLLECTED';
+  agent_id?: string;
+  agent_name?: string;
+  waste_weight_kg?: number;
+  notes?: string;
+}
+
 export interface DemoStoreState {
   version: string;
   accounts: DemoUserAccount[];
@@ -40,6 +54,7 @@ export interface DemoStoreState {
   tickets: SupportTicketItem[];
   pickupRequests: ManualPickupRequestItem[];
   banking: BankingSettings;
+  collections?: StoredCollectionRecord[];
 }
 
 export function getInitialSeedState(): DemoStoreState {
@@ -344,5 +359,19 @@ export function getInitialSeedState(): DemoStoreState {
       upi_id: 'greenpulse.waste@sbi',
       merchant_id: 'MID_GP_MUNICIPAL_883',
     },
+    collections: [
+      {
+        id: 'col-001',
+        consumer_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+        household_id: 'hh-001',
+        qr_payload: 'GPC-QR-CONS-C1D2E3F4A5B67890',
+        date: '2026-11-14',
+        timestamp: '2026-11-14T08:30:00Z',
+        status: 'COLLECTED',
+        agent_id: 'a1b2c3d4-e5f6-7890-1234-56789abcdef0',
+        agent_name: 'Ramesh Kumar',
+        waste_weight_kg: 3.2,
+      },
+    ],
   };
 }

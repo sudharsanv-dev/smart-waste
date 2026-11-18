@@ -13,6 +13,8 @@ export const ConsumerPaymentsPage: React.FC = () => {
   const { user } = useAuth();
   const [payments, setPayments] = useState<PaymentHistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isPaying, setIsPaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentHistoryItem | null>(null);
@@ -22,11 +24,15 @@ export const ConsumerPaymentsPage: React.FC = () => {
 
   const fetchPayments = async () => {
     setIsLoading(true);
+    setLoadError(null);
     try {
       const history = await consumerService.getPaymentHistory();
       setPayments(history);
-    } catch (err) {
+      setIsLoaded(true);
+    } catch (err: unknown) {
       console.error('Failed to load payment history:', err);
+      const msg = err instanceof Error ? err.message : 'Failed to load payment history.';
+      setLoadError(msg);
     } finally {
       setIsLoading(false);
     }
@@ -36,12 +42,15 @@ export const ConsumerPaymentsPage: React.FC = () => {
     fetchPayments();
   }, [user]);
 
-  const unpaidInvoice = payments.find((p) => p.status === 'UNPAID');
-  const pendingAmount = unpaidInvoice ? unpaidInvoice.amount : 0;
+  const unpaidInvoices = payments.filter((p) => p.status === 'UNPAID');
+  const nextUnpaidInvoice = unpaidInvoices[0];
+  const pendingAmount = unpaidInvoices.reduce((sum, p) => sum + p.amount, 0);
 
-  // Single or double-click payment execution
-  const handlePayDues = async () => {
-    // Client mutex guard
+  // Single or double-click payment execution bound to specific invoice
+  const handlePayInvoice = async (target?: PaymentHistoryItem) => {
+    const targetToPay = target || nextUnpaidInvoice;
+    if (!targetToPay) return;
+
     if (paymentLockRef.current) {
       console.warn('Payment execution already in flight. Suppressing duplicate trigger.');
       return;
@@ -52,15 +61,18 @@ export const ConsumerPaymentsPage: React.FC = () => {
     setError(null);
 
     try {
-      // Step 1: Create simulated payment order
-      const order = await consumerService.createPaymentOrder(pendingAmount || 150);
+      // Step 1: Create simulated payment order bound to exact invoice_id and amount
+      const order = await consumerService.createPaymentOrder({
+        invoice_id: targetToPay.invoice_id,
+        amount: targetToPay.amount,
+      });
 
-      // Step 2: Verify payment (backend enforces idempotency on invoice_id)
+      // Step 2: Verify payment (backend enforces exact order ID and invoice_id)
       const verifyRes = await consumerService.verifyPayment(
         order.order_id,
         `pay_sim_${Date.now()}`,
         'simulated_razorpay_signature',
-        unpaidInvoice?.invoice_id
+        targetToPay.invoice_id
       );
 
       // Refresh payments ledger from store
@@ -68,7 +80,7 @@ export const ConsumerPaymentsPage: React.FC = () => {
       setPayments(updatedList);
 
       // Auto-open demo receipt for the settled invoice
-      const paidItem = updatedList.find((p) => p.invoice_id === verifyRes.invoice_id);
+      const paidItem = updatedList.find((p) => p.invoice_id === (verifyRes.invoice_id || targetToPay.invoice_id));
       if (paidItem) {
         setSelectedReceipt(paidItem);
       }
@@ -79,6 +91,38 @@ export const ConsumerPaymentsPage: React.FC = () => {
       setIsPaying(false);
       paymentLockRef.current = false;
     }
+  };
+
+  const handleDownloadReceipt = (receipt: PaymentHistoryItem) => {
+    const receiptContent = `=====================================================
+GREENPULSE CITY MUNICIPAL CORPORATION
+Department of Solid Waste Management
+Official Demo Receipt
+=====================================================
+Invoice ID:       ${receipt.invoice_id}
+Status:           ${receipt.status}
+Resident:         ${user?.name || receipt.consumer_name || 'Resident'}
+Ward Area:        Ward ${receipt.area_code || user?.area_code || '600001'}
+Settled Date:     ${receipt.paid_at || new Date().toISOString()}
+Payment Method:   ${receipt.payment_method || 'UPI / Razorpay Simulator'}
+Total Amount:     INR ${receipt.amount.toFixed(2)}
+=====================================================
+DISCLAIMER: DEMO RECEIPT ONLY FOR TESTING PURPOSES.
+=====================================================`;
+
+    const blob = new Blob([receiptContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Receipt-${receipt.invoice_id}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handlePrintReceipt = () => {
+    window.print();
   };
 
   return (
@@ -121,19 +165,42 @@ export const ConsumerPaymentsPage: React.FC = () => {
 
             <div className="mt-4">
               <span className="text-xs text-gray-400">Total Outstanding Balance</span>
-              <div className="text-3xl font-extrabold text-white mt-1" data-testid="consumer-pending-dues">
-                ₹{pendingAmount.toFixed(2)}
-              </div>
-              {pendingAmount > 0 ? (
-                <div className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
-                  <Clock className="w-3.5 h-3.5" />
-                  <span>Invoice: {unpaidInvoice?.invoice_id} • Due by Nov 30, 2026</span>
+              {loadError ? (
+                <div className="mt-2 p-3 bg-rose-950/50 border border-rose-500/50 rounded-xl text-xs text-rose-200 flex items-center justify-between">
+                  <span>Failed to load outstanding balance.</span>
+                  <button
+                    type="button"
+                    data-testid="retry-payments-btn"
+                    onClick={fetchPayments}
+                    className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded font-bold"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : !isLoaded ? (
+                <div className="py-4">
+                  <LoadingSpinner size="sm" label="Loading outstanding balance..." />
                 </div>
               ) : (
-                <div className="text-xs text-emerald-400 flex items-center gap-1.5 mt-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Account Current • No Dues Pending</span>
-                </div>
+                <>
+                  <div className="text-3xl font-extrabold text-white mt-1" data-testid="consumer-pending-dues">
+                    ₹{pendingAmount.toFixed(2)}
+                  </div>
+                  {pendingAmount > 0 ? (
+                    <div className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>
+                        Invoice: {nextUnpaidInvoice?.invoice_id}
+                        {unpaidInvoices.length > 1 ? ` (+${unpaidInvoices.length - 1} more)` : ''} • Due by Nov 30, 2026
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-emerald-400 flex items-center gap-1.5 mt-1" data-testid="dues-cleared-badge">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>All Dues Cleared • Account Current</span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -145,11 +212,11 @@ export const ConsumerPaymentsPage: React.FC = () => {
                 : 'All past invoices have been settled. Thank you for your timely payment!'}
             </span>
 
-            {pendingAmount > 0 && (
+            {isLoaded && !loadError && pendingAmount > 0 && nextUnpaidInvoice && (
               <button
                 type="button"
                 disabled={isPaying}
-                onClick={handlePayDues}
+                onClick={() => handlePayInvoice(nextUnpaidInvoice)}
                 data-testid="pay-dues-btn"
                 className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-sm transition-all shadow-sm flex items-center justify-center gap-2 disabled:opacity-50 flex-shrink-0"
               >
@@ -157,7 +224,7 @@ export const ConsumerPaymentsPage: React.FC = () => {
                   <LoadingSpinner size="sm" label="Processing..." />
                 ) : (
                   <>
-                    <span>Pay ₹{pendingAmount.toFixed(2)}</span>
+                    <span>Pay ₹{nextUnpaidInvoice.amount.toFixed(2)}</span>
                     <ArrowRight className="w-4 h-4" />
                   </>
                 )}
@@ -195,6 +262,10 @@ export const ConsumerPaymentsPage: React.FC = () => {
         {isLoading ? (
           <div className="p-12">
             <LoadingSpinner label="Loading payment ledger..." />
+          </div>
+        ) : loadError ? (
+          <div className="p-8">
+            <ErrorState message={loadError} onRetry={fetchPayments} />
           </div>
         ) : payments.length === 0 ? (
           <div className="p-8">
@@ -251,6 +322,17 @@ export const ConsumerPaymentsPage: React.FC = () => {
                         >
                           <FileText className="w-3.5 h-3.5" />
                           <span>View Receipt</span>
+                        </button>
+                      ) : item.status === 'UNPAID' ? (
+                        <button
+                          type="button"
+                          disabled={isPaying}
+                          onClick={() => handlePayInvoice(item)}
+                          data-testid={`pay-invoice-${item.invoice_id}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md transition-colors disabled:opacity-50"
+                        >
+                          <CreditCard className="w-3.5 h-3.5" />
+                          <span>Pay ₹{item.amount.toFixed(2)}</span>
                         </button>
                       ) : (
                         <span className="text-[11px] text-gray-400">—</span>
@@ -351,11 +433,20 @@ export const ConsumerPaymentsPage: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => alert('Demo receipt print simulation: Receipt logged successfully.')}
+                onClick={handlePrintReceipt}
+                data-testid="print-receipt-btn"
+                className="px-3.5 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+              >
+                <span>Print Receipt</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDownloadReceipt(selectedReceipt)}
+                data-testid="download-receipt-btn"
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Download PDF</span>
+                <span>Download Receipt (.txt)</span>
               </button>
             </div>
           </div>

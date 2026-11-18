@@ -1,43 +1,107 @@
 // src/pages/consumer/ConsumerSchedulePage.tsx
 // Screen 2: Consumer Neighborhood Timetable (Phase 2)
-// Calls locked contract GET /api/v1/consumer/schedules with consumer's area_code, date filter, and local timezone handling
+// Calls locked contract GET /api/v1/consumer/schedules with consumer's area_code, date filter, pagination, and local timezone handling
+// Implements page navigation, reset to page one on filter change, and unavailable state when ward is unassigned
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { consumerService } from '../../api/consumerService';
 import { ConsumerScheduleItem } from '../../types/contracts';
 import { LoadingSpinner, EmptyState } from '../../components/layout/LoadingEmptyError';
-import { Calendar, Clock, MapPin, Filter, Info } from 'lucide-react';
+import { Calendar, Clock, MapPin, Filter, Info, ShieldAlert, ChevronLeft, ChevronRight, RefreshCw, AlertCircle } from 'lucide-react';
 
 export const ConsumerSchedulePage: React.FC = () => {
   const { user } = useAuth();
   const [schedules, setSchedules] = useState<ConsumerScheduleItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Filters & Pagination State
   const [dateFilter, setDateFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [page, setPage] = useState(0);
+  const [pageSize] = useState(5);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalElements, setTotalElements] = useState(0);
 
-  const areaCode = user?.area_code || '600001';
+  // Authenticated profile data strictly without fallback
+  const areaCode = user?.area_code;
+  const isWardAvailable = Boolean(areaCode);
+
+  const fetchSchedules = useCallback(async () => {
+    if (!areaCode) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await consumerService.getSchedules({
+        area_code: areaCode,
+        start_date: dateFilter || undefined,
+        page,
+        size: pageSize,
+      });
+
+      setSchedules(res.content || []);
+      setTotalPages(res.total_pages || 1);
+      setTotalElements(res.total_elements || 0);
+    } catch (err) {
+      console.error('Failed to load consumer schedules:', err);
+      setError('Unable to load neighborhood schedules. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [areaCode, dateFilter, page, pageSize]);
 
   useEffect(() => {
-    async function fetchSchedules() {
-      setIsLoading(true);
-      try {
-        const res = await consumerService.getSchedules(areaCode);
-        setSchedules(res.content || []);
-      } catch (err) {
-        console.error('Failed to load consumer schedules:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
     fetchSchedules();
-  }, [areaCode]);
+  }, [fetchSchedules]);
 
-  const filtered = schedules.filter((s) => {
-    if (dateFilter && s.scheduled_date !== dateFilter) return false;
-    if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
-    return true;
-  });
+  // Handle filter changes: reset to page 1 (0-indexed)
+  const handleDateChange = (val: string) => {
+    setDateFilter(val);
+    setPage(0);
+  };
+
+  const handleStatusChange = (val: string) => {
+    setStatusFilter(val);
+    setPage(0);
+  };
+
+  const handleResetFilters = () => {
+    setDateFilter('');
+    setStatusFilter('ALL');
+    setPage(0);
+  };
+
+  // Client-side status filter applied if status is selected
+  const displayedSchedules = statusFilter === 'ALL'
+    ? schedules
+    : schedules.filter((s) => s.status === statusFilter);
+
+  // Unavailable Ward State
+  if (!isWardAvailable) {
+    return (
+      <div className="space-y-6" data-testid="consumer-schedule-page">
+        <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-xs flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Calendar className="w-5 h-5 text-gray-400" />
+            <h1 className="text-xl font-bold text-gray-900">Neighborhood Waste Collection Timetable</h1>
+          </div>
+        </div>
+
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-8 text-center max-w-xl mx-auto space-y-3" data-testid="ward-unavailable-state">
+          <ShieldAlert className="w-10 h-10 text-amber-600 mx-auto" />
+          <h2 className="text-base font-bold text-amber-950">Ward Assignment Unavailable</h2>
+          <p className="text-xs text-amber-800 leading-relaxed">
+            Your household profile does not have an assigned operational ward. The neighborhood collection timetable cannot be loaded until a municipal ward is provisioned to your account.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="consumer-schedule-page">
@@ -65,6 +129,25 @@ export const ConsumerSchedulePage: React.FC = () => {
         </div>
       </div>
 
+      {/* Error Banner with Working Retry */}
+      {error && (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-xs text-rose-900 flex items-center justify-between gap-3" data-testid="schedules-error-banner">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={fetchSchedules}
+            data-testid="retry-schedules-btn"
+            className="inline-flex items-center gap-1 px-3 py-1 bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 font-semibold rounded-lg text-xs transition-colors flex-shrink-0"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Retry</span>
+          </button>
+        </div>
+      )}
+
       {/* Filter Bar */}
       <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
@@ -77,7 +160,7 @@ export const ConsumerSchedulePage: React.FC = () => {
             <input
               type="date"
               value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
+              onChange={(e) => handleDateChange(e.target.value)}
               data-testid="schedule-date-filter"
               className="text-xs border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
             />
@@ -86,7 +169,7 @@ export const ConsumerSchedulePage: React.FC = () => {
           <div>
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => handleStatusChange(e.target.value)}
               data-testid="schedule-status-filter"
               className="text-xs border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white"
             >
@@ -101,10 +184,8 @@ export const ConsumerSchedulePage: React.FC = () => {
           {(dateFilter || statusFilter !== 'ALL') && (
             <button
               type="button"
-              onClick={() => {
-                setDateFilter('');
-                setStatusFilter('ALL');
-              }}
+              onClick={handleResetFilters}
+              data-testid="reset-filters-btn"
               className="text-xs text-rose-600 hover:text-rose-700 font-semibold underline"
             >
               Reset Filters
@@ -113,17 +194,17 @@ export const ConsumerSchedulePage: React.FC = () => {
         </div>
       </div>
 
-      {/* Schedules Content */}
+      {/* Schedules Table */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-xs overflow-hidden" data-testid="schedules-table-container">
         {isLoading ? (
           <div className="p-12">
             <LoadingSpinner label="Loading neighborhood schedules..." />
           </div>
-        ) : filtered.length === 0 ? (
+        ) : displayedSchedules.length === 0 ? (
           <div className="p-8">
             <EmptyState
               title="No collection schedules found"
-              description={`There are currently no matching collection schedules scheduled for Ward ${areaCode}. Please check back later or contact your municipal supervisor.`}
+              description={`There are currently no matching collection schedules scheduled for Ward ${areaCode}.`}
             />
           </div>
         ) : (
@@ -139,7 +220,7 @@ export const ConsumerSchedulePage: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filtered.map((item) => (
+                {displayedSchedules.map((item) => (
                   <tr key={item.id} className="hover:bg-gray-50/75 transition-colors" data-testid={`schedule-row-${item.id}`}>
                     <td className="py-3.5 px-4 font-bold text-gray-900">{item.scheduled_date}</td>
                     <td className="py-3.5 px-4 text-gray-700 font-medium">
@@ -170,6 +251,39 @@ export const ConsumerSchedulePage: React.FC = () => {
             </table>
           </div>
         )}
+
+        {/* Page Navigation Controls */}
+        <div
+          className="p-4 border-t border-gray-200 bg-gray-50/50 flex items-center justify-between text-xs"
+          data-testid="schedule-pagination"
+        >
+          <span className="text-gray-500" data-testid="page-indicator">
+            Page {page + 1} of {Math.max(1, totalPages)} ({totalElements} total entries)
+          </span>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={page === 0 || isLoading}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              data-testid="prev-page-btn"
+              className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              <span>Previous</span>
+            </button>
+            <button
+              type="button"
+              disabled={page >= totalPages - 1 || isLoading}
+              onClick={() => setPage((p) => p + 1)}
+              data-testid="next-page-btn"
+              className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <span>Next</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Contract & Guidance Banner */}

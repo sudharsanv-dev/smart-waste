@@ -37,13 +37,26 @@ export const consumerService = {
   },
 
   // 3. Timetable / Schedules (Section 3 Locked Contract GET /api/v1/consumer/schedules)
-  async getSchedules(area_code: string, page = 0, size = 20): Promise<{
+  async getSchedules(
+    paramsOrArea: string | { area_code: string; start_date?: string; end_date?: string; page?: number; size?: number },
+    legacyPage?: number,
+    legacySize?: number
+  ): Promise<{
     content: ConsumerScheduleItem[];
+    page_number: number;
+    page_size: number;
     total_elements: number;
     total_pages: number;
     last: boolean;
   }> {
-    return scheduleService.getConsumerSchedules({ area_code, page, size });
+    if (typeof paramsOrArea === 'string') {
+      return scheduleService.getConsumerSchedules({
+        area_code: paramsOrArea,
+        page: legacyPage ?? 0,
+        size: legacySize ?? 20,
+      });
+    }
+    return scheduleService.getConsumerSchedules(paramsOrArea);
   },
 
   // 4. Payments History & Verify (Section 4 // TODO_BACKEND_SATHEESH)
@@ -55,8 +68,9 @@ export const consumerService = {
     return res.content || [];
   },
 
-  async createPaymentOrder(amount: number) {
-    const res = await backendGapService.createPaymentOrder({ amount });
+  async createPaymentOrder(params: number | { amount?: number; invoice_id?: string }) {
+    const payload = typeof params === 'number' ? { amount: params } : params;
+    const res = await backendGapService.createPaymentOrder(payload);
     if (isBackendUnavailable(res)) {
       throw new Error(res.message);
     }

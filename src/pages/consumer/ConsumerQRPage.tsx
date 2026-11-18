@@ -12,18 +12,20 @@ export const ConsumerQRPage: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const qrPayload = user?.qr_payload || 'GPC-QR-CONS-C1D2E3F4A5B67890';
+  const qrPayload = user?.qr_payload || '';
   const householdName = user?.name || 'Resident';
-  const areaCode = user?.area_code || '600001';
+  const areaCode = user?.area_code || '';
+  const isAvailable = Boolean(qrPayload && areaCode);
 
   const handleCopy = () => {
+    if (!qrPayload) return;
     navigator.clipboard?.writeText(qrPayload);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleDownload = () => {
-    // Demo download simulation
+    if (!isAvailable) return;
     const svg = document.getElementById('consumer-qr-svg');
     if (!svg) return;
     const svgData = new XMLSerializer().serializeToString(svg);
@@ -32,6 +34,7 @@ export const ConsumerQRPage: React.FC = () => {
     const link = document.createElement('a');
     link.href = url;
     link.download = `GreenPulse-Household-QR-${areaCode}.svg`;
+    link.setAttribute('data-token', qrPayload);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -56,8 +59,13 @@ export const ConsumerQRPage: React.FC = () => {
           <button
             type="button"
             onClick={() => setIsFullscreen(true)}
+            disabled={!isAvailable}
             data-testid="fullscreen-qr-toggle"
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-semibold rounded-lg transition-colors"
+            className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg transition-colors ${
+              isAvailable
+                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 cursor-pointer'
+                : 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed opacity-60'
+            }`}
           >
             <Maximize2 className="w-4 h-4" />
             <span>Fullscreen Bright-View</span>
@@ -66,8 +74,13 @@ export const ConsumerQRPage: React.FC = () => {
           <button
             type="button"
             onClick={handleDownload}
+            disabled={!isAvailable}
             data-testid="download-qr-btn"
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 text-xs font-semibold rounded-lg transition-colors"
+            className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg transition-colors ${
+              isAvailable
+                ? 'bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 cursor-pointer'
+                : 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed opacity-60'
+            }`}
           >
             <Download className="w-4 h-4" />
             <span>Download Placard</span>
@@ -75,77 +88,94 @@ export const ConsumerQRPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Main QR Card */}
-      <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-xs max-w-xl mx-auto text-center space-y-6">
-        <div className="space-y-1">
-          <span className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider bg-emerald-50 px-2.5 py-0.5 rounded-full inline-block">
-            Corporation of GreenPulse City
-          </span>
-          <h2 className="text-lg font-bold text-gray-900 mt-1">{householdName}</h2>
-          <p className="text-xs text-gray-500">
-            Registered Ward: <span className="font-semibold text-gray-800">{areaCode}</span> • Official Collection Node
-          </p>
+      {/* Main QR Card or Unavailable State */}
+      {!isAvailable ? (
+        <div
+          data-testid="qr-unavailable-state"
+          className="bg-white p-8 rounded-2xl border border-gray-200 shadow-xs max-w-xl mx-auto text-center space-y-4"
+        >
+          <div className="w-12 h-12 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center mx-auto">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-lg font-bold text-gray-900">Household QR Unavailable</h2>
+            <p className="text-xs text-gray-500 max-w-sm mx-auto">
+              Your household sanitation QR code or assigned ward area is not configured. Please ensure your account profile has an assigned ward area code and security token.
+            </p>
+          </div>
         </div>
-
-        {/* QR Code Container */}
-        <div className="p-6 bg-white border-2 border-dashed border-gray-300 rounded-2xl inline-block shadow-xs">
-          <QRCodeSVG
-            id="consumer-qr-svg"
-            value={qrPayload}
-            size={220}
-            level="H"
-            includeMargin={true}
-            className="mx-auto"
-          />
-        </div>
-
-        {/* Monospace Opaque Token Display */}
-        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 text-left space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
-              Opaque Security Token:
+      ) : (
+        <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-xs max-w-xl mx-auto text-center space-y-6">
+          <div className="space-y-1">
+            <span className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider bg-emerald-50 px-2.5 py-0.5 rounded-full inline-block">
+              Corporation of GreenPulse City
             </span>
-            <button
-              type="button"
-              onClick={handleCopy}
-              data-testid="copy-qr-token-btn"
-              className="text-xs text-emerald-600 hover:text-emerald-700 font-semibold"
-            >
-              {copied ? 'Copied!' : 'Copy Token'}
-            </button>
+            <h2 className="text-lg font-bold text-gray-900 mt-1">{householdName}</h2>
+            <p className="text-xs text-gray-500">
+              Registered Ward: <span className="font-semibold text-gray-800">{areaCode}</span> • Official Collection Node
+            </p>
           </div>
-          <div
-            className="font-mono font-bold text-sm text-gray-900 break-all select-all bg-white p-2.5 rounded border border-gray-200"
-            data-testid="consumer-qr-token-value"
-          >
-            {qrPayload}
-          </div>
-          <div className="text-[11px] text-gray-500 flex items-center gap-1.5 pt-1">
-            <CheckCircle className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
-            <span>Active & Authorized for Sanitation Agent Scanner</span>
-          </div>
-        </div>
 
-        {/* Household Placard Details */}
-        <div className="grid grid-cols-2 gap-3 text-left text-xs bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
-          <div>
-            <span className="text-gray-500 block text-[10px] uppercase font-semibold">Registered Resident</span>
-            <span className="font-bold text-gray-900">{householdName}</span>
+          {/* QR Code Container */}
+          <div className="p-6 bg-white border-2 border-dashed border-gray-300 rounded-2xl inline-block shadow-xs">
+            <QRCodeSVG
+              id="consumer-qr-svg"
+              value={qrPayload}
+              size={220}
+              level="H"
+              includeMargin={true}
+              className="mx-auto"
+            />
           </div>
-          <div>
-            <span className="text-gray-500 block text-[10px] uppercase font-semibold">Contact Mobile</span>
-            <span className="font-bold text-gray-900">{user?.mobile_number || '9876543210'}</span>
+
+          {/* Monospace Opaque Token Display */}
+          <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 text-left space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
+                Opaque Security Token:
+              </span>
+              <button
+                type="button"
+                onClick={handleCopy}
+                data-testid="copy-qr-token-btn"
+                className="text-xs text-emerald-600 hover:text-emerald-700 font-semibold"
+              >
+                {copied ? 'Copied!' : 'Copy Token'}
+              </button>
+            </div>
+            <div
+              className="font-mono font-bold text-sm text-gray-900 break-all select-all bg-white p-2.5 rounded border border-gray-200"
+              data-testid="consumer-qr-token-value"
+            >
+              {qrPayload}
+            </div>
+            <div className="text-[11px] text-gray-500 flex items-center gap-1.5 pt-1">
+              <CheckCircle className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+              <span>Active & Authorized for Sanitation Agent Scanner</span>
+            </div>
           </div>
-          <div>
-            <span className="text-gray-500 block text-[10px] uppercase font-semibold">Service Area</span>
-            <span className="font-bold text-gray-900">Ward {areaCode}</span>
-          </div>
-          <div>
-            <span className="text-gray-500 block text-[10px] uppercase font-semibold">Token Type</span>
-            <span className="font-bold text-emerald-800">Opaque Fixture Key</span>
+
+          {/* Household Placard Details */}
+          <div className="grid grid-cols-2 gap-3 text-left text-xs bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
+            <div>
+              <span className="text-gray-500 block text-[10px] uppercase font-semibold">Registered Resident</span>
+              <span className="font-bold text-gray-900">{householdName}</span>
+            </div>
+            <div>
+              <span className="text-gray-500 block text-[10px] uppercase font-semibold">Contact Mobile</span>
+              <span className="font-bold text-gray-900">{user?.mobile_number || 'Not provided'}</span>
+            </div>
+            <div>
+              <span className="text-gray-500 block text-[10px] uppercase font-semibold">Service Area</span>
+              <span className="font-bold text-gray-900">Ward {areaCode}</span>
+            </div>
+            <div>
+              <span className="text-gray-500 block text-[10px] uppercase font-semibold">Token Type</span>
+              <span className="font-bold text-emerald-800">Opaque Fixture Key</span>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Security & Stale Token Notice */}
       <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-amber-900 text-xs space-y-2">
