@@ -15,6 +15,9 @@ import {
   registerPaymentOrder,
   getPaymentOrder,
   updatePaymentOrder,
+  getAgentAssignedAreas,
+  claimPickupRequestInStore,
+  ClaimPickupRequestResult,
 } from './mockStore';
 import { DemoUserAccount, StoredCollectionRecord } from './mockData';
 import {
@@ -1288,77 +1291,34 @@ export function setupMockAdapter(): MockAdapter | null {
 
     // Delegate to shared multi-context test fixture if exposed
     const sharedClaim = typeof window !== 'undefined'
-      ? (window as unknown as { __SHARED_CLAIM_FIXTURE__?: (id: string, agt: { user_id: string; name: string }) => Promise<{ status: number; data?: ManualPickupRequestItem; message?: string; errors?: unknown }> }).__SHARED_CLAIM_FIXTURE__
+      ? (window as unknown as { __SHARED_CLAIM_FIXTURE__?: (id: string, agentUserId: string) => Promise<ClaimPickupRequestResult> }).__SHARED_CLAIM_FIXTURE__
       : undefined;
 
+    let claimRes: ClaimPickupRequestResult;
     if (typeof sharedClaim === 'function') {
-      const fixRes = await sharedClaim(requestId, { user_id: account.user_id, name: account.name });
-      if (fixRes.status === 200 && fixRes.data) {
-        setStoreState((prev) => ({
-          ...prev,
-          pickupRequests: prev.pickupRequests.map((r) => (r.id === requestId ? fixRes.data! : r)),
-        }));
-        return [200, fixRes.data];
-      } else {
-        return [
-          fixRes.status,
-          {
-            success: false,
-            message: fixRes.message,
-            statusCode: fixRes.status,
-            data: null,
-            errors: fixRes.errors || { error_code: 'CONFLICT' },
-          },
-        ];
-      }
+      claimRes = await sharedClaim(requestId, account.user_id);
+    } else {
+      claimRes = claimPickupRequestInStore(requestId, account.user_id);
     }
 
-    const state = getStoreState();
-    const target = state.pickupRequests.find((r) => r.id === requestId);
-
-    if (!target) {
+    if (claimRes.status === 200 && claimRes.data) {
+      setStoreState((prev) => ({
+        ...prev,
+        pickupRequests: prev.pickupRequests.map((r) => (r.id === requestId ? claimRes.data! : r)),
+      }));
+      return [200, claimRes.data];
+    } else {
       return [
-        404,
+        claimRes.status,
         {
           success: false,
-          message: 'Pickup request not found',
-          statusCode: 404,
-          errors: { error_code: 'NOT_FOUND' },
-        },
-      ];
-    }
-
-    // Atomic conflict verification: Request MUST be PENDING
-    if (target.status !== 'PENDING') {
-      return [
-        409,
-        {
-          success: false,
-          message: `This request has already been claimed by another agent (${target.claimed_by_agent_name || 'claimed'}).`,
-          statusCode: 409,
+          message: claimRes.message,
+          statusCode: claimRes.status,
           data: null,
-          errors: {
-            error_code: 'CONFLICT',
-            current_status: target.status,
-            owner_id: target.claimed_by_agent_id,
-          },
+          errors: claimRes.errors || { error_code: 'CONFLICT' },
         },
       ];
     }
-
-    const updated: ManualPickupRequestItem = {
-      ...target,
-      status: 'CLAIMED',
-      claimed_by_agent_id: account.user_id,
-      claimed_by_agent_name: account.name,
-    };
-
-    setStoreState((prev) => ({
-      ...prev,
-      pickupRequests: prev.pickupRequests.map((r) => (r.id === requestId ? updated : r)),
-    }));
-
-    return [200, updated];
   });
 
   mock.onPost('/api/v1/requests').reply((config) => {

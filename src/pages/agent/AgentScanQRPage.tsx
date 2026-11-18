@@ -58,7 +58,8 @@ export const AgentScanQRPage: React.FC = () => {
   const isMountedRef = useRef<boolean>(true);
 
   // Resolve household details from opaque QR payload
-  const resolveHouseholdDetails = (payload: string): DecodedHousehold => {
+  const resolveHouseholdDetails = (payload: string): DecodedHousehold | null => {
+    if (!payload || !payload.trim()) return null;
     let matchedConsumer: { user_id?: string; name?: string; area_code?: string; mobile_number?: string } | undefined;
     let matchedHousehold: { id?: string; name?: string; address?: string; area_code?: string; mobile_number?: string } | undefined;
 
@@ -77,11 +78,15 @@ export const AgentScanQRPage: React.FC = () => {
       }
     }
 
+    if (!matchedConsumer && !matchedHousehold) {
+      return null;
+    }
+
     return {
       qr_payload: payload,
       name: matchedConsumer?.name || matchedHousehold?.name || 'Curbside Resident',
       address: matchedHousehold?.address || 'Designated Curbside Address',
-      area_code: matchedHousehold?.area_code || matchedConsumer?.area_code || '600001',
+      area_code: matchedHousehold?.area_code || matchedConsumer?.area_code || '',
       consumer_id: matchedConsumer?.user_id || matchedHousehold?.id,
     };
   };
@@ -274,7 +279,7 @@ export const AgentScanQRPage: React.FC = () => {
   // Submit collection ONLY AFTER explicit confirmation
   const handleSubmitCollection = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!qrPayload.trim()) return;
+    if (!qrPayload.trim() || !decodedHousehold) return;
 
     setIsSubmitting(true);
     setScanResult(null);
@@ -472,114 +477,174 @@ export const AgentScanQRPage: React.FC = () => {
           {qrPayload ? (
             <div
               data-testid="scan-confirmation-card"
-              className="bg-white rounded-2xl border-2 border-emerald-500/80 p-6 shadow-sm space-y-4"
+              className={`bg-white rounded-2xl border-2 p-6 shadow-sm space-y-4 ${
+                decodedHousehold ? 'border-emerald-500/80' : 'border-rose-400'
+              }`}
             >
-              <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-                <div className="flex items-center gap-2">
-                  <UserCheck className="w-5 h-5 text-emerald-600" />
-                  <h3 className="text-sm font-bold text-gray-900">Confirm Household Collection</h3>
-                </div>
-                <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
-                  QR Decoded
-                </span>
-              </div>
+              {decodedHousehold ? (
+                <>
+                  <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                    <div className="flex items-center gap-2">
+                      <UserCheck className="w-5 h-5 text-emerald-600" />
+                      <h3 className="text-sm font-bold text-gray-900">Confirm Household Collection</h3>
+                    </div>
+                    <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                      QR Decoded
+                    </span>
+                  </div>
 
-              {/* Decoded Household Summary */}
-              <div className="bg-gray-50 rounded-xl p-3.5 space-y-2 border border-gray-200 text-xs">
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500 font-medium">Resident:</span>
-                  <strong className="text-gray-900 font-bold" data-testid="decoded-resident-name">
-                    {decodedHousehold?.name || 'Curbside Resident'}
-                  </strong>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500 font-medium">Assigned Ward:</span>
-                  <span className="font-semibold text-gray-800">
-                    Ward {decodedHousehold?.area_code || '600001'}
-                  </span>
-                </div>
-                <div className="flex justify-between items-start">
-                  <span className="text-gray-500 font-medium">Placard Token:</span>
-                  <span className="font-mono text-[11px] text-gray-700 max-w-[200px] truncate" data-testid="decoded-token">
-                    {qrPayload}
-                  </span>
-                </div>
-              </div>
+                  {/* Decoded Household Summary */}
+                  <div className="bg-gray-50 rounded-xl p-3.5 space-y-2 border border-gray-200 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500 font-medium">Resident:</span>
+                      <strong className="text-gray-900 font-bold" data-testid="decoded-resident-name">
+                        {decodedHousehold.name}
+                      </strong>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500 font-medium">Assigned Ward:</span>
+                      <span className="font-semibold text-gray-800" data-testid="decoded-ward">
+                        Ward {decodedHousehold.area_code}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500 font-medium">Address:</span>
+                      <span className="text-gray-700" data-testid="decoded-address">
+                        {decodedHousehold.address}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-start">
+                      <span className="text-gray-500 font-medium">Placard Token:</span>
+                      <span className="font-mono text-[11px] text-gray-700 max-w-[200px] truncate" data-testid="decoded-token">
+                        {qrPayload}
+                      </span>
+                    </div>
+                  </div>
 
-              {/* Collection Parameters */}
-              <form onSubmit={handleSubmitCollection} className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                      Waste Weight (KG)
-                    </label>
-                    <div className="relative">
+                  {/* Collection Parameters */}
+                  <form onSubmit={handleSubmitCollection} className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
+                          Waste Weight (KG)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0.1"
+                            max="100"
+                            value={wasteWeight}
+                            onChange={(e) => setWasteWeight(e.target.value)}
+                            data-testid="scan-weight-input"
+                            className="w-full text-xs font-bold p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none pl-8"
+                          />
+                          <Scale className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-3" />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
+                          Segregation Check
+                        </label>
+                        <div className="p-2.5 bg-emerald-50 text-emerald-800 text-xs font-bold rounded-lg border border-emerald-200 text-center flex items-center justify-center gap-1">
+                          <FileCheck2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Segregated (Pass)</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
+                        Field Collection Notes
+                      </label>
                       <input
-                        type="number"
-                        step="0.1"
-                        min="0.1"
-                        max="100"
-                        value={wasteWeight}
-                        onChange={(e) => setWasteWeight(e.target.value)}
-                        data-testid="scan-weight-input"
-                        className="w-full text-xs font-bold p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none pl-8"
+                        type="text"
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        data-testid="scan-notes-input"
+                        className="w-full text-xs p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                       />
-                      <Scale className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-3" />
                     </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="submit"
+                        disabled={isSubmitting}
+                        data-testid="submit-scan-btn"
+                        className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2"
+                      >
+                        {isSubmitting ? (
+                          <LoadingSpinner size="sm" label="Verifying & Recording..." />
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Confirm & Record Collection</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleClearScan}
+                        data-testid="clear-scan-btn"
+                        className="p-2.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-xl transition-colors border border-gray-200"
+                        title="Clear and scan another"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </form>
+                </>
+              ) : (
+                /* Unrecognized Household State */
+                <div data-testid="household-not-recognized-state" className="space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                    <div className="flex items-center gap-2 text-rose-600">
+                      <AlertTriangle className="w-5 h-5 text-rose-600 flex-shrink-0" />
+                      <h3 className="text-sm font-bold text-gray-900" data-testid="household-not-recognized-title">
+                        Household not recognized
+                      </h3>
+                    </div>
+                    <span className="text-[10px] font-bold text-rose-800 bg-rose-50 px-2.5 py-0.5 rounded-full border border-rose-200">
+                      Unregistered Token
+                    </span>
                   </div>
 
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                      Segregation Check
-                    </label>
-                    <div className="p-2.5 bg-emerald-50 text-emerald-800 text-xs font-bold rounded-lg border border-emerald-200 text-center flex items-center justify-center gap-1">
-                      <FileCheck2 className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Segregated (Pass)</span>
-                    </div>
+                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-3.5 text-xs text-rose-900 space-y-1.5">
+                    <p className="font-semibold">
+                      This QR placard token is not registered in the sanitation database.
+                    </p>
+                    <p className="text-[11px] text-rose-700">
+                      Scanned Token: <span className="font-mono font-bold" data-testid="decoded-token">{qrPayload}</span>
+                    </p>
+                    <p className="text-[11px] text-rose-700 font-medium">
+                      Confirmation is disabled until a valid registered household placard is scanned or resolved.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={true}
+                      data-testid="submit-scan-btn"
+                      className="flex-1 py-2.5 px-4 bg-gray-200 text-gray-400 font-bold text-xs rounded-xl cursor-not-allowed shadow-none border border-gray-300"
+                    >
+                      Confirmation Disabled (Household Not Recognized)
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleClearScan}
+                      data-testid="clear-scan-btn"
+                      className="p-2.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-xl transition-colors border border-gray-200"
+                      title="Clear and scan another"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                    Field Collection Notes
-                  </label>
-                  <input
-                    type="text"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    data-testid="scan-notes-input"
-                    className="w-full text-xs p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                  />
-                </div>
-
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    data-testid="submit-scan-btn"
-                    className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2"
-                  >
-                    {isSubmitting ? (
-                      <LoadingSpinner size="sm" label="Verifying & Recording..." />
-                    ) : (
-                      <>
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>Confirm & Record Collection</span>
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleClearScan}
-                    data-testid="clear-scan-btn"
-                    className="p-2.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-xl transition-colors border border-gray-200"
-                    title="Clear and scan another"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                  </button>
-                </div>
-              </form>
+              )}
             </div>
           ) : (
             <div className="bg-white rounded-2xl border border-dashed border-gray-300 p-8 text-center space-y-2">
@@ -622,9 +687,10 @@ export const AgentScanQRPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => handleDecodedQR('GPC-QR-CONS-UNRELATED999')}
+                    data-testid="simulate-scan-unknown-btn"
                     className="px-2.5 py-1 text-[11px] font-semibold bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 rounded-lg transition-colors"
                   >
-                    Unrelated Area (Ward 600099)
+                    Unrecognized Token
                   </button>
                 </div>
               </div>

@@ -2,18 +2,22 @@
 // Environment guard and runtime validation ensuring no demo flags or placeholder URLs leak into production
 // The selected Vite mode (import.meta.env.MODE) is strictly authoritative.
 
-const mode = import.meta.env.MODE;
-const rawAppMode = import.meta.env.VITE_APP_MODE;
+const env = (typeof import.meta !== 'undefined' && import.meta.env)
+  ? import.meta.env
+  : (process.env as unknown as Record<string, string | undefined>);
+
+const mode = env.MODE || env.NODE_ENV || 'demo';
+const rawAppMode = env.VITE_APP_MODE;
 
 // Selected Vite mode is the authoritative source of truth
 export const IS_PRODUCTION: boolean = mode === 'production';
 export const IS_DEMO: boolean = !IS_PRODUCTION;
 export const APP_MODE: 'demo' | 'production' = IS_PRODUCTION ? 'production' : 'demo';
 
-const rawUseMock = import.meta.env.VITE_USE_MOCK_API;
-const rawEnableDemoTools = import.meta.env.VITE_ENABLE_DEMO_TOOLS;
-const rawApiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
-const rawTimezone = import.meta.env.VITE_OPERATIONAL_TIMEZONE || 'Asia/Kolkata';
+const rawUseMock = env.VITE_USE_MOCK_API;
+const rawEnableDemoTools = env.VITE_ENABLE_DEMO_TOOLS;
+const rawApiBaseUrl = env.VITE_API_BASE_URL || '';
+const rawTimezone = env.VITE_OPERATIONAL_TIMEZONE || 'Asia/Kolkata';
 
 // In live production mode, demo features are strictly disabled
 export const USE_MOCK_API: boolean = IS_PRODUCTION 

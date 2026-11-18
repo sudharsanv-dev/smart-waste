@@ -9,6 +9,8 @@ import {
   getStoreState,
   registerDemoSession,
 } from '../../src/api/mockStore';
+import { DemoUserAccount } from '../../src/api/mockData';
+import { ManualPickupRequestItem } from '../../src/types/contracts';
 import { setApiBearerToken } from '../../src/api/axiosClient';
 import { agentService } from '../../src/api/agentService';
 import { consumerService } from '../../src/api/consumerService';
@@ -273,18 +275,18 @@ describe('Phase 3 Field Agent Module & Exit Gate', () => {
     });
 
     it('rejects collection scan for Ward 600001 if agent has no assigned area codes (no 600001 fallback)', async () => {
-      const unassignedAgent = {
+      const unassignedAgent: DemoUserAccount = {
         user_id: 'agt-unassigned',
         name: 'Unassigned Agent',
         mobile_number: '9876543299',
         password: 'Agent@123',
-        role: 'AGENT' as const,
+        role: 'AGENT',
         assigned_area_codes: [], // Explicitly no assigned wards
         area_code: undefined,
       };
 
       // Add to store accounts so session resolution succeeds, but with no assigned wards
-      getStoreState().accounts.push(unassignedAgent as any);
+      getStoreState().accounts.push(unassignedAgent);
 
       const token = 'agt-token-unassigned';
       registerSession(token, unassignedAgent);
@@ -360,6 +362,45 @@ describe('Phase 3 Field Agent Module & Exit Gate', () => {
       expect(finalReq?.status).toBe('CLAIMED');
       expect(finalReq?.claimed_by_agent_id).toBe(RAMESH_AGENT.user_id);
       expect(finalReq?.claimed_by_agent_name).toBe(RAMESH_AGENT.name);
+    });
+
+    it('rejects claim for an out-of-area pickup request with 403 OUTSIDE_ASSIGNED_ROUTE and leaves it unchanged', async () => {
+      const state = getStoreState();
+      const outsideReq: ManualPickupRequestItem = {
+        id: 'req-outside-99',
+        consumer_id: 'cons-outside',
+        consumer_name: 'Outside Resident',
+        consumer_mobile: '9998887777',
+        area_code: '600099', // Outside Ramesh's assigned wards (600001, 600040)
+        waste_type: 'BULK',
+        preferred_date: '2026-11-22',
+        address: '99 Distant Boulevard',
+        status: 'PENDING',
+        created_at: '2026-11-17T12:00:00Z',
+      };
+      state.pickupRequests.push(outsideReq);
+
+      const rameshToken = 'agt-token-ramesh-out';
+      registerSession(rameshToken, RAMESH_AGENT);
+      setApiBearerToken(rameshToken);
+
+      let errorStatus = 0;
+      let errorCode = '';
+      try {
+        await agentService.claimPickupRequest('req-outside-99');
+      } catch (err: unknown) {
+        const errObj = err as { response?: { status?: number; data?: { errors?: { error_code?: string } } } };
+        errorStatus = errObj.response?.status || 0;
+        errorCode = errObj.response?.data?.errors?.error_code || '';
+      }
+
+      expect(errorStatus).toBe(403);
+      expect(errorCode).toBe('OUTSIDE_ASSIGNED_ROUTE');
+
+      // Assert request remains unchanged in the store
+      const afterReq = getStoreState().pickupRequests.find((r) => r.id === 'req-outside-99');
+      expect(afterReq?.status).toBe('PENDING');
+      expect(afterReq?.claimed_by_agent_id).toBeUndefined();
     });
   });
 

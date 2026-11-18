@@ -3,7 +3,7 @@
 // Supports browser localStorage persistence, cross-tab synchronization, and deterministic reset
 
 import { DemoStoreState, getInitialSeedState, SCHEMA_VERSION } from './mockData';
-import { NotificationItem } from '../types/contracts';
+import { NotificationItem, ManualPickupRequestItem } from '../types/contracts';
 import { IS_DEMO } from '../lib/env';
 import { clearSessionStorage, triggerAuthExpired } from './axiosClient';
 
@@ -348,4 +348,101 @@ if (typeof window !== 'undefined') {
       }
     }
   });
+}
+
+// --------------------------------------------------------------------------
+// Unified Agent Route Eligibility and Atomic Request Claim Implementation
+// (Used across demo adapter, unit tests, and multi-context Playwright fixture)
+// --------------------------------------------------------------------------
+
+export function getAgentAssignedAreas(state: DemoStoreState, agentUserId: string): Set<string> {
+  const agentAccount = state.accounts.find((a) => a.user_id === agentUserId);
+  if (!agentAccount) return new Set();
+  return new Set([
+    ...(agentAccount.assigned_area_codes || []),
+    ...state.schedules.filter((s) => s.assigned_agent_id === agentUserId).map((s) => s.area_code),
+    ...(agentAccount.area_code ? [agentAccount.area_code] : []),
+  ]);
+}
+
+export function getEligiblePickupRequestsInStore(
+  state: DemoStoreState,
+  agentUserId: string
+): ManualPickupRequestItem[] {
+  const assignedAreas = getAgentAssignedAreas(state, agentUserId);
+  return state.pickupRequests.filter((r) => assignedAreas.has(r.area_code));
+}
+
+export interface ClaimPickupRequestResult {
+  status: number;
+  data?: ManualPickupRequestItem;
+  message?: string;
+  errors?: Record<string, unknown>;
+}
+
+export function claimPickupRequestInStore(
+  requestId: string,
+  agentUserId: string
+): ClaimPickupRequestResult {
+  const state = getStoreState();
+  const agentAccount = state.accounts.find((a) => a.user_id === agentUserId);
+
+  if (!agentAccount || agentAccount.role !== 'AGENT') {
+    return {
+      status: 403,
+      message: 'Forbidden: Valid collection agent identity required to claim requests',
+      errors: { error_code: 'FORBIDDEN' },
+    };
+  }
+
+  const target = state.pickupRequests.find((r) => r.id === requestId);
+  if (!target) {
+    return {
+      status: 404,
+      message: 'Pickup request not found',
+      errors: { error_code: 'NOT_FOUND' },
+    };
+  }
+
+  // Check the same route eligibility used by the request list
+  const assignedAreas = getAgentAssignedAreas(state, agentUserId);
+  if (!assignedAreas.has(target.area_code)) {
+    return {
+      status: 403,
+      message: `Pickup request area (Ward ${target.area_code}) is outside agent assigned routes.`,
+      errors: { error_code: 'OUTSIDE_ASSIGNED_ROUTE' },
+    };
+  }
+
+  // An already-claimed request must return 409 and preserve its owner
+  if (target.status !== 'PENDING') {
+    return {
+      status: 409,
+      message: `This request has already been claimed by another agent (${target.claimed_by_agent_name || 'claimed'}).`,
+      errors: {
+        error_code: 'CONFLICT',
+        current_status: target.status,
+        owner_id: target.claimed_by_agent_id,
+      },
+    };
+  }
+
+  // Atomically change pending request to claimed in one operation
+  const updated: ManualPickupRequestItem = {
+    ...target,
+    status: 'CLAIMED',
+    claimed_by_agent_id: agentAccount.user_id,
+    claimed_by_agent_name: agentAccount.name,
+  };
+
+  setStoreState((prev) => ({
+    ...prev,
+    pickupRequests: prev.pickupRequests.map((r) => (r.id === requestId ? updated : r)),
+  }));
+
+  return {
+    status: 200,
+    data: updated,
+    message: `Successfully claimed request ${requestId}`,
+  };
 }
