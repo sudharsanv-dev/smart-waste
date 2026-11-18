@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --mode demo",
     "build:demo": "vite build --mode demo",
-    "build:prod": "node scripts/verify-env.js && vite build --mode production",
+    "build:prod": "node scripts/verify-env.js --mode production && vite build --mode production",
     "build": "npm run build:demo",
     "preview": "vite preview --port 4173",
     "test": "vitest run",

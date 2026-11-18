@@ -1,27 +1,40 @@
 // scripts/verify-env.js
 // Production build safeguard enforcing Rule 5 and Scenario M-03 from PLAN.md
-// Uses Vite's loadEnv to evaluate the exact effective environment (including .env, .env.local, .env.[mode], .env.[mode].local and process.env)
+// Uses Vite's loadEnv to evaluate the exact effective environment cascade
+// CLI --mode takes strict precedence over any ambient shell MODE or NODE_ENV
 
 import { loadEnv } from 'vite';
+import path from 'node:path';
 
-const mode = process.argv.includes('--mode') 
-  ? process.argv[process.argv.indexOf('--mode') + 1] 
-  : (process.env.MODE || process.env.NODE_ENV || 'production');
+// CLI argument --mode strictly binds validation to the selected build mode
+const modeArgIdx = process.argv.indexOf('--mode');
+const mode = (modeArgIdx !== -1 && process.argv[modeArgIdx + 1])
+  ? process.argv[modeArgIdx + 1]
+  : 'production';
+
+const dirArgIdx = process.argv.indexOf('--dir');
+const rootDir = (dirArgIdx !== -1 && process.argv[dirArgIdx + 1])
+  ? path.resolve(process.argv[dirArgIdx + 1])
+  : process.cwd();
 
 const isProduction = mode === 'production';
 
-// Load effective Vite environment variables for the specified mode
-const loadedEnv = loadEnv(mode, process.cwd(), '');
-const effectiveEnv = { ...loadedEnv, ...process.env };
-
-const useMockApi = effectiveEnv.VITE_USE_MOCK_API;
-const enableDemoTools = effectiveEnv.VITE_ENABLE_DEMO_TOOLS;
-const apiBaseUrl = (effectiveEnv.VITE_API_BASE_URL || '').trim();
-
-console.log(`[verify-env] Auditing effective environment for mode: "${mode}"...`);
+console.log(`[verify-env] Auditing effective environment for target mode: "${mode}" in "${rootDir}"...`);
 
 if (isProduction) {
+  const loadedEnv = loadEnv(mode, rootDir, '');
+  const effectiveEnv = { ...loadedEnv, ...process.env };
+
+  const useMockApi = effectiveEnv.VITE_USE_MOCK_API;
+  const enableDemoTools = effectiveEnv.VITE_ENABLE_DEMO_TOOLS;
+  const appMode = effectiveEnv.VITE_APP_MODE;
+  const apiBaseUrl = (effectiveEnv.VITE_API_BASE_URL || '').trim();
+
   const errors = [];
+
+  if (appMode === 'demo') {
+    errors.push('CRITICAL: Conflicting configuration: VITE_APP_MODE cannot be "demo" in a production build!');
+  }
 
   if (useMockApi === 'true' || useMockApi === true) {
     errors.push('CRITICAL: VITE_USE_MOCK_API cannot be true in production build!');
