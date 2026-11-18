@@ -143,15 +143,22 @@ test.describe('Phase 1 Authentication & Role Navigation Guards', () => {
     await page.locator('[data-testid="notifications-bell-btn"]').click();
     await expect(page.locator('#notification-drawer-title')).toBeVisible();
 
-    // Locate the first unread item mark-read button
+    // Locate the first unread item mark-read button and remember the clicked notification's ID
     const markReadBtn = page.locator('[data-testid^="mark-read-btn-"]').first();
     await expect(markReadBtn).toBeVisible();
+
+    const testId = await markReadBtn.getAttribute('data-testid');
+    const notifId = testId?.replace('mark-read-btn-', '');
+    expect(notifId).toBeTruthy();
+
+    const targetRow = page.locator(`[data-testid="notification-item-${notifId}"]`);
 
     // Mark item as read
     await markReadBtn.click();
 
-    // Verify item updates to Read in UI
-    await expect(page.locator('text=Read').first()).toBeVisible();
+    // Verify exact row updates to Read and mark button disappears
+    await expect(targetRow.locator('text=Read')).toBeVisible();
+    await expect(page.locator(`[data-testid="mark-read-btn-${notifId}"]`)).not.toBeVisible();
 
     // Close drawer
     await page.locator('[data-testid="close-notifications-btn"]').click();
@@ -161,8 +168,11 @@ test.describe('Phase 1 Authentication & Role Navigation Guards', () => {
     await page.locator('[data-testid="notifications-bell-btn"]').click();
     await expect(page.locator('#notification-drawer-title')).toBeVisible();
 
-    // Verify read status persists upon reopening
-    await expect(page.locator('text=Read').first()).toBeVisible();
+    // Check that exact row after reopening is still Read
+    const reopenedTargetRow = page.locator(`[data-testid="notification-item-${notifId}"]`);
+    await expect(reopenedTargetRow).toBeVisible();
+    await expect(reopenedTargetRow.locator('text=Read')).toBeVisible();
+    await expect(page.locator(`[data-testid="mark-read-btn-${notifId}"]`)).not.toBeVisible();
 
     // Close drawer
     await page.locator('[data-testid="close-notifications-btn"]').click();

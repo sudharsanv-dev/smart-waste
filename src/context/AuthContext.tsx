@@ -3,7 +3,7 @@
 // Separates live session (memory-only) from minimal persisted demo session
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { AuthSuccessData, UserRole, AuthLoginRequest, DemoSession } from '../types/contracts';
+import { UserSession, UserRole, AuthLoginRequest, DemoSession } from '../types/contracts';
 import { authService } from '../api/authService';
 import {
   AUTH_EXPIRED_EVENT,
@@ -14,12 +14,12 @@ import {
 import { IS_DEMO, USE_MOCK_API } from '../lib/env';
 
 interface AuthContextType {
-  user: AuthSuccessData | null;
+  user: UserSession | null;
   token: string | null;
   role: UserRole | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (credentials: AuthLoginRequest) => Promise<AuthSuccessData>;
+  login: (credentials: AuthLoginRequest) => Promise<UserSession>;
   logout: () => void;
   simulateExpiry: () => Promise<void>;
 }
@@ -27,7 +27,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<AuthSuccessData | null>(null);
+  const [user, setUser] = useState<UserSession | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
@@ -49,7 +49,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               mobile_number: session.mobile_number,
               role: session.role,
               access_token: session.access_token,
-              refresh_token: '', // Discarded
               token_type: 'Bearer',
               expires_in: remainingSec,
             });
@@ -86,22 +85,22 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, []);
 
-  const login = async (credentials: AuthLoginRequest): Promise<AuthSuccessData> => {
-    const authData = await authService.login(credentials);
-    setUser(authData);
-    setToken(authData.access_token);
+  const login = async (credentials: AuthLoginRequest): Promise<UserSession> => {
+    const session = await authService.login(credentials);
+    setUser(session);
+    setToken(session.access_token);
 
     if (IS_DEMO && USE_MOCK_API && typeof window !== 'undefined') {
       // In demo mode: persist ONLY the minimal fake demo session with expires_at (no refresh token)
       const minimalSession: DemoSession = {
-        user_id: authData.user_id,
-        name: authData.name,
-        username: authData.username,
-        mobile_number: authData.mobile_number,
-        role: authData.role,
-        access_token: authData.access_token,
-        token_type: authData.token_type,
-        expires_at: Date.now() + (authData.expires_in || 3600) * 1000,
+        user_id: session.user_id,
+        name: session.name,
+        username: session.username,
+        mobile_number: session.mobile_number,
+        role: session.role,
+        access_token: session.access_token,
+        token_type: session.token_type,
+        expires_at: Date.now() + (session.expires_in || 3600) * 1000,
       };
       try {
         sessionStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(minimalSession));
@@ -111,7 +110,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     // In live mode: live access token is kept in memory only; unused refresh token is discarded
 
-    return authData;
+    return session;
   };
 
   const logout = () => {

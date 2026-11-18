@@ -1,13 +1,13 @@
 // tests/flows/authFlows.test.ts
-// Phase 1 Auth, Session Separation, Ownership Enforcement, and Locked Contract Integration Tests
+// Phase 1 Auth, Session Registry, Ownership Enforcement, and Locked Contract Integration Tests
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { authService } from '../../src/api/authService';
 import { scheduleService } from '../../src/api/scheduleService';
 import { notificationService } from '../../src/api/notificationService';
 import { backendGapService } from '../../src/api/backendGapService';
-import { resetDemoData } from '../../src/api/mockStore';
-import { getApiBearerToken, setApiBearerToken } from '../../src/api/axiosClient';
+import { resetDemoData, registerDemoSession } from '../../src/api/mockStore';
+import { getApiBearerToken, setApiBearerToken, axiosClient } from '../../src/api/axiosClient';
 import * as envModule from '../../src/lib/env';
 import '../../src/api/mockAdapter'; // Ensure mock adapter is wired
 
@@ -18,7 +18,7 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
   });
 
   describe('3.1 Locked Authentication Flows (C-01, C-02)', () => {
-    it('logs in as CONSUMER and resolves role strictly from server payload', async () => {
+    it('logs in as CONSUMER, resolves role strictly from server payload, and discards refresh token at boundary', async () => {
       const authData = await authService.login({
         mobile_number: '9876543210',
         password: 'Consumer@123',
@@ -32,6 +32,9 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
       expect(authData.token_type).toBe('Bearer');
       expect(authData.access_token).toBeDefined();
       expect(getApiBearerToken()).toBe(authData.access_token);
+
+      // Verify that unused live refresh token is discarded at auth-service boundary
+      expect('refresh_token' in authData).toBe(false);
     });
 
     it('logs in as ADMIN and resolves role strictly from server payload', async () => {
@@ -45,6 +48,7 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
       expect(authData.username).toBe('admin');
       expect(authData.user_id).toBe('d2e3f4a5-b6c7-8901-2345-67890abcdef1');
       expect(getApiBearerToken()).toBe(authData.access_token);
+      expect('refresh_token' in authData).toBe(false);
     });
 
     it('logs in as AGENT and resolves role strictly from server payload', async () => {
@@ -58,6 +62,7 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
       expect(authData.user_id).toBe('a1b2c3d4-e5f6-7890-1234-56789abcdef0');
       expect(authData.name).toBe('Ramesh Kumar');
       expect(getApiBearerToken()).toBe(authData.access_token);
+      expect('refresh_token' in authData).toBe(false);
     });
 
     it('rejects invalid password with 401 error envelope and INVALID_CREDENTIALS', async () => {
@@ -112,6 +117,54 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
       // Set a token that expired 1 second ago
       setApiBearerToken('expired_test_token', -1);
       expect(getApiBearerToken()).toBeNull();
+    });
+
+    it('rejects unknown or unregistered demo sessions with 401', async () => {
+      setApiBearerToken('unknown_fake_token_random');
+      let rejected = false;
+      try {
+        await scheduleService.getAdminSchedules();
+      } catch (err: unknown) {
+        rejected = true;
+        const axiosErr = err as { response?: { status?: number } };
+        expect(axiosErr.response?.status).toBe(401);
+      }
+      expect(rejected).toBe(true);
+    });
+
+    it('rejects expired demo sessions with 401', async () => {
+      const expiredToken = 'demo_tok_expired_fixture';
+      registerDemoSession({
+        token: expiredToken,
+        user_id: 'd2e3f4a5-b6c7-8901-2345-67890abcdef1',
+        role: 'ADMIN',
+        expires_at: Date.now() - 5000, // expired 5s ago
+      });
+
+      setApiBearerToken(expiredToken);
+      let rejected = false;
+      try {
+        await scheduleService.getAdminSchedules();
+      } catch (err: unknown) {
+        rejected = true;
+        const axiosErr = err as { response?: { status?: number } };
+        expect(axiosErr.response?.status).toBe(401);
+      }
+      expect(rejected).toBe(true);
+    });
+
+    it('preserves valid demo reload: registered active session resolves account', async () => {
+      const activeToken = 'demo_tok_reload_fixture';
+      registerDemoSession({
+        token: activeToken,
+        user_id: 'd2e3f4a5-b6c7-8901-2345-67890abcdef1',
+        role: 'ADMIN',
+        expires_at: Date.now() + 3600 * 1000,
+      });
+
+      setApiBearerToken(activeToken);
+      const schedules = await scheduleService.getAdminSchedules();
+      expect(schedules.content.length).toBeGreaterThan(0);
     });
   });
 
@@ -178,7 +231,29 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
   });
 
   describe('3.3 Locked Notifications Service Flows & Ownership Enforcement (C-04)', () => {
-    it('registers device token successfully', async () => {
+    it('requires authenticated session for device token registration', async () => {
+      // 1. Unauthenticated request should fail with 401
+      let unauthFailed = false;
+      try {
+        await axiosClient.post('/api/v1/notifications/device-token', {
+          device_id: 'test-device-uuid',
+          token: 'fcm-test-token-12345',
+          platform: 'ANDROID',
+        });
+      } catch (err: unknown) {
+        unauthFailed = true;
+        const axiosErr = err as { response?: { status?: number } };
+        expect(axiosErr.response?.status).toBe(401);
+      }
+      expect(unauthFailed).toBe(true);
+
+      // 2. Authenticated request succeeds with 200
+      await authService.login({
+        mobile_number: '9876543210',
+        password: 'Consumer@123',
+        type: 'CONSUMER',
+      });
+
       const res = await notificationService.registerDeviceToken({
         device_id: 'test-device-uuid',
         token: 'fcm-test-token-12345',
@@ -188,60 +263,100 @@ describe('Phase 1 Auth, Role Resolution, and Locked Contracts Flow', () => {
       expect(res.updated_at).toBeDefined();
     });
 
-    it('admin broadcast returns 202 QUEUED and appears in consumer inbox', async () => {
+    it('admin broadcast with multiple recipients maintains separate read status for each recipient', async () => {
+      // Admin broadcasts emergency alert to ALL
       await authService.login({
         username: 'admin',
         password: 'Admin@123',
         type: 'ADMIN',
       });
 
-      const res = await notificationService.sendAdminNotification({
-        title: 'Emergency Delay',
-        body: 'Collection delayed by 30 mins',
-        target_type: 'PINCODE',
-        target_value: '600001',
+      const sendRes = await notificationService.sendAdminNotification({
+        title: 'Citywide Sanitation Alert',
+        body: 'Heavy rainfall alert in all wards',
+        target_type: 'ALL',
+        target_value: 'ALL',
       });
-      expect(res.status).toBe('QUEUED');
-      expect(res.dispatch_id).toBeDefined();
+      expect(sendRes.status).toBe('QUEUED');
 
-      // Consumer in area 600001 logs in and sees broadcast notification
+      // 1. Recipient A (Consumer John Doe) checks inbox -> UNREAD
       await authService.login({
         mobile_number: '9876543210',
         password: 'Consumer@123',
         type: 'CONSUMER',
       });
 
-      const inbox = await notificationService.getNotifications();
-      const found = inbox.content.find((n) => n.title === 'Emergency Delay');
-      expect(found).toBeDefined();
-      expect(found?.status).toBe('UNREAD');
-    });
+      const consumerInbox = await notificationService.getNotifications();
+      const notifForA = consumerInbox.content.find((n) => n.title === 'Citywide Sanitation Alert');
+      expect(notifForA).toBeDefined();
+      expect(notifForA?.status).toBe('UNREAD');
 
-    it('agent arrival notification returns 202 QUEUED and is delivered to targeted consumer', async () => {
+      // Recipient A marks it as READ
+      const readRes = await notificationService.markNotificationAsRead(notifForA!.id);
+      expect(readRes.status).toBe('READ');
+
+      // Recipient A sees it as READ
+      const consumerInboxAfter = await notificationService.getNotifications();
+      const notifForAAfter = consumerInboxAfter.content.find((n) => n.id === notifForA!.id);
+      expect(notifForAAfter?.status).toBe('READ');
+
+      // 2. Recipient B (Agent Ramesh Kumar) checks inbox -> MUST STILL BE UNREAD
       await authService.login({
         mobile_number: '9876543210',
         password: 'Agent@123',
         type: 'AGENT',
       });
 
-      const res = await notificationService.sendAgentNotification({
-        title: 'Agent Arriving Soon',
-        body: 'Truck is approaching your street',
-        target_user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0', // John Doe
-      });
-      expect(res.status).toBe('QUEUED');
-      expect(res.dispatch_id).toBeDefined();
+      const agentInbox = await notificationService.getNotifications();
+      const notifForB = agentInbox.content.find((n) => n.id === notifForA!.id);
+      expect(notifForB).toBeDefined();
+      expect(notifForB?.status).toBe('UNREAD'); // Still UNREAD for Agent B!
+    });
 
-      // Targeted consumer logs in and sees notification
+    it('agent arrival notification validates consumer on assigned route', async () => {
+      // Agent 1 (Ramesh Kumar - assigned to 600001, 600040)
       await authService.login({
         mobile_number: '9876543210',
-        password: 'Consumer@123',
-        type: 'CONSUMER',
+        password: 'Agent@123',
+        type: 'AGENT',
       });
 
-      const inbox = await notificationService.getNotifications();
-      const arrival = inbox.content.find((n) => n.body === 'Truck is approaching your street');
-      expect(arrival).toBeDefined();
+      // 1. Target consumer inside route (John Doe in 600001) -> succeeds with 202
+      const validRes = await notificationService.sendAgentNotification({
+        title: 'Agent Arriving Soon',
+        body: 'Truck is on your street',
+        target_user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+      });
+      expect(validRes.status).toBe('QUEUED');
+
+      // 2. Target consumer outside route (hh-005 Vignesh Iyer in 600002) -> fails with 400 OUTSIDE_ASSIGNED_ROUTE
+      let outsideFailed = false;
+      try {
+        await notificationService.sendAgentNotification({
+          title: 'Agent Arriving Soon',
+          body: 'Truck is on your street',
+          target_user_id: 'hh-005',
+        });
+      } catch (err: unknown) {
+        outsideFailed = true;
+        const axiosErr = err as { response?: { status?: number; data?: { errors?: { error_code?: string } } } };
+        expect(axiosErr.response?.status).toBe(400);
+        expect(axiosErr.response?.data?.errors?.error_code).toBe('OUTSIDE_ASSIGNED_ROUTE');
+      }
+      expect(outsideFailed).toBe(true);
+    });
+
+    it('admin personal inbox contains only admin audience notifications (does not leak consumer private notifications)', async () => {
+      await authService.login({
+        username: 'admin',
+        password: 'Admin@123',
+        type: 'ADMIN',
+      });
+
+      const adminInbox = await notificationService.getNotifications();
+      // Seed notification 1 ("Agent Arriving Soon") is targeted directly to John Doe; admin personal inbox must not contain it
+      const privateArrivalNotif = adminInbox.content.find((n) => n.title === 'Agent Arriving Soon');
+      expect(privateArrivalNotif).toBeUndefined();
     });
 
     it('mark-read allows owner to update and rejects non-owner with 403', async () => {

@@ -278,19 +278,21 @@ export function getInitialSeedState(): DemoStoreState {
     notifications: [
       {
         id: 'c3d4e5f6-1234-5678-90ab-cdef12345678',
-        recipient_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+        target_user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
         title: 'Agent Arriving Soon',
         body: 'Your waste collection agent is 5 minutes away.',
         status: 'UNREAD',
         created_at: '2026-11-14T18:40:00Z',
+        read_by: [],
       },
       {
         id: 'd4e5f6a7-2345-6789-01bc-def234567890',
-        recipient_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+        target_user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
         title: 'Monthly Billing Generated',
         body: 'Your waste fee of ₹150 for November 2026 is ready for payment.',
         status: 'READ',
         created_at: '2026-11-01T09:00:00Z',
+        read_by: ['c1d2e3f4-a5b6-7890-1234-56789abcdef0'],
       },
     ],
     tickets: [

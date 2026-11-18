@@ -80,6 +80,85 @@ export function setStoreState(updater: DemoStoreState | ((prev: DemoStoreState) 
   return next;
 }
 
+export interface DemoSessionRecord {
+  token: string;
+  user_id: string;
+  role: 'CONSUMER' | 'ADMIN' | 'AGENT';
+  expires_at: number;
+}
+
+const SESSIONS_STORAGE_KEY = 'smartwaste_demo_sessions_registry';
+let inMemorySessions: Map<string, DemoSessionRecord> = new Map();
+
+function loadSessions(): Map<string, DemoSessionRecord> {
+  if (isLocalStorageAvailable()) {
+    try {
+      const raw = window.localStorage.getItem(SESSIONS_STORAGE_KEY);
+      if (raw) {
+        const list = JSON.parse(raw) as DemoSessionRecord[];
+        const map = new Map<string, DemoSessionRecord>();
+        const now = Date.now();
+        list.forEach((s) => {
+          if (s.expires_at > now) {
+            map.set(s.token, s);
+          }
+        });
+        inMemorySessions = map;
+        return map;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return inMemorySessions;
+}
+
+function saveSessions(): void {
+  if (isLocalStorageAvailable()) {
+    try {
+      const list = Array.from(inMemorySessions.values());
+      window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(list));
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export function registerDemoSession(session: DemoSessionRecord): void {
+  loadSessions();
+  inMemorySessions.set(session.token, session);
+  saveSessions();
+}
+
+export function getDemoSession(token: string): DemoSessionRecord | null {
+  loadSessions();
+  const session = inMemorySessions.get(token);
+  if (!session) return null;
+  if (Date.now() >= session.expires_at) {
+    inMemorySessions.delete(token);
+    saveSessions();
+    return null;
+  }
+  return session;
+}
+
+export function deleteDemoSession(token: string): void {
+  loadSessions();
+  inMemorySessions.delete(token);
+  saveSessions();
+}
+
+export function clearDemoSessions(): void {
+  inMemorySessions.clear();
+  if (isLocalStorageAvailable()) {
+    try {
+      window.localStorage.removeItem(SESSIONS_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export function resetDemoData(): DemoStoreState {
   if (!IS_DEMO) {
     throw new Error('[SECURITY FATAL] Reset Demo Data is disabled in production mode.');
@@ -87,6 +166,7 @@ export function resetDemoData(): DemoStoreState {
 
   const freshSeed = getInitialSeedState();
   inMemoryState = freshSeed;
+  clearDemoSessions();
 
   if (isLocalStorageAvailable()) {
     try {

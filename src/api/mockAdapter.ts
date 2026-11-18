@@ -1,11 +1,18 @@
 // src/api/mockAdapter.ts
 // Demo-only Axios mock adapter registered ONLY when USE_MOCK_API && IS_DEMO are true
-// Implements exact Section 3 Locked API Contracts with session-based ownership enforcement
+// Implements exact Section 3 Locked API Contracts with exact session identity resolution
 
 import MockAdapter from 'axios-mock-adapter';
 import { axiosClient } from './axiosClient';
 import { IS_DEMO, USE_MOCK_API } from '../lib/env';
-import { getStoreState, setStoreState } from './mockStore';
+import {
+  getStoreState,
+  setStoreState,
+  registerDemoSession,
+  getDemoSession,
+  deleteDemoSession,
+  DemoSessionRecord,
+} from './mockStore';
 import { DemoUserAccount } from './mockData';
 import {
   AuthSuccessResponse,
@@ -26,9 +33,10 @@ import {
 
 let mock: MockAdapter | null = null;
 
-// Helper to resolve the authenticated demo account from the request Bearer token
+// Helper to resolve the authenticated demo account strictly from registered sessions
 function resolveAccount(config: { headers?: unknown }): {
   account?: DemoUserAccount;
+  session?: DemoSessionRecord;
   errorResponse?: [number, unknown];
 } {
   const headers = (config.headers || {}) as Record<string, unknown>;
@@ -71,37 +79,15 @@ function resolveAccount(config: { headers?: unknown }): {
   }
 
   const token = parts[1];
-  if (token === 'expired_token' || token.includes('expired')) {
+  // Resolve demo identity from an exact session issued by mock login (no text matching)
+  const session = getDemoSession(token);
+  if (!session) {
     return {
       errorResponse: [
         401,
         {
           success: false,
-          message: 'Session has expired or token is invalid',
-          statusCode: 401,
-          data: null,
-          errors: { error_code: 'TOKEN_EXPIRED' },
-        },
-      ],
-    };
-  }
-
-  const state = getStoreState();
-  // Match account by user_id embedded in token, or fallback to role in token
-  let matched = state.accounts.find((a) => token.includes(a.user_id));
-  if (!matched) {
-    if (token.includes('consumer')) matched = state.accounts.find((a) => a.role === 'CONSUMER');
-    else if (token.includes('admin')) matched = state.accounts.find((a) => a.role === 'ADMIN');
-    else if (token.includes('agent')) matched = state.accounts.find((a) => a.role === 'AGENT');
-  }
-
-  if (!matched) {
-    return {
-      errorResponse: [
-        401,
-        {
-          success: false,
-          message: 'Invalid session or account not found',
+          message: 'Session has expired or is invalid',
           statusCode: 401,
           data: null,
           errors: { error_code: 'INVALID_SESSION' },
@@ -110,7 +96,24 @@ function resolveAccount(config: { headers?: unknown }): {
     };
   }
 
-  return { account: matched };
+  const state = getStoreState();
+  const matched = state.accounts.find((a) => a.user_id === session.user_id);
+  if (!matched) {
+    return {
+      errorResponse: [
+        401,
+        {
+          success: false,
+          message: 'Account not found for active session',
+          statusCode: 401,
+          data: null,
+          errors: { error_code: 'INVALID_SESSION' },
+        },
+      ],
+    };
+  }
+
+  return { account: matched, session };
 }
 
 export function setupMockAdapter(): MockAdapter | null {
@@ -175,8 +178,16 @@ export function setupMockAdapter(): MockAdapter | null {
       return [401, errRes];
     }
 
-    // Role is strictly returned by the server based on the matched account
-    // Embed account user_id into token for deterministic session-ownership resolution
+    // Generate opaque session token bound to this account and expiry time
+    const sessionToken = `demo_tok_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const expiresIn = 3600;
+    registerDemoSession({
+      token: sessionToken,
+      user_id: account.user_id,
+      role: account.role,
+      expires_at: Date.now() + expiresIn * 1000,
+    });
+
     const successRes: AuthSuccessResponse = {
       success: true,
       message: `${account.role.charAt(0) + account.role.slice(1).toLowerCase()} login successful`,
@@ -187,10 +198,10 @@ export function setupMockAdapter(): MockAdapter | null {
         username: account.username || (account.role === 'ADMIN' ? 'admin' : undefined),
         mobile_number: account.mobile_number,
         role: account.role,
-        access_token: `mock_jwt_${account.user_id}_${Date.now()}`,
-        refresh_token: `mock_refresh_${account.user_id}_${Date.now()}`,
+        access_token: sessionToken,
+        refresh_token: `mock_refresh_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
         token_type: 'Bearer',
-        expires_in: 3600,
+        expires_in: expiresIn,
       },
       errors: null,
     };
@@ -199,12 +210,21 @@ export function setupMockAdapter(): MockAdapter | null {
   });
 
   // Simulated 401 expiry endpoint for testing session expiration (demo only)
-  mock.onPost('/api/v1/auth/simulate-expire').reply(401, {
-    success: false,
-    message: 'Session has expired or token is invalid',
-    statusCode: 401,
-    data: null,
-    errors: { error_code: 'TOKEN_EXPIRED' },
+  mock.onPost('/api/v1/auth/simulate-expire').reply((config) => {
+    const { session } = resolveAccount(config);
+    if (session) {
+      deleteDemoSession(session.token);
+    }
+    return [
+      401,
+      {
+        success: false,
+        message: 'Session has expired or token is invalid',
+        statusCode: 401,
+        data: null,
+        errors: { error_code: 'TOKEN_EXPIRED' },
+      },
+    ];
   });
 
   // -------------------------------------------------------------
@@ -390,8 +410,11 @@ export function setupMockAdapter(): MockAdapter | null {
   // -------------------------------------------------------------
   // 3.3 Push & In-App Notification Contract (Ownership & Filters)
   // -------------------------------------------------------------
-  // A. Device Token Registration
+  // A. Device Token Registration (Requires authenticated session)
   mock.onPost('/api/v1/notifications/device-token').reply((config) => {
+    const { errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+
     let body: DeviceTokenRequest;
     try {
       body = JSON.parse(config.data || '{}') as DeviceTokenRequest;
@@ -431,6 +454,7 @@ export function setupMockAdapter(): MockAdapter | null {
           created_at: now,
           target_type: body.target_type,
           target_value: body.target_value,
+          read_by: [],
         },
         ...prev.notifications,
       ],
@@ -454,7 +478,50 @@ export function setupMockAdapter(): MockAdapter | null {
       return [403, { message: 'Forbidden: Agent role required' }];
     }
 
-    const body = JSON.parse(config.data || '{}') as AgentNotificationSendRequest;
+    let body: AgentNotificationSendRequest;
+    try {
+      body = JSON.parse(config.data || '{}') as AgentNotificationSendRequest;
+    } catch {
+      return [400, { message: 'Invalid payload' }];
+    }
+
+    const state = getStoreState();
+
+    // Validate that agent's arrival notification targets a consumer on their assigned route
+    const targetConsumer =
+      state.accounts.find((a) => a.user_id === body.target_user_id) ||
+      state.households.find((h) => h.id === body.target_user_id);
+
+    if (!targetConsumer) {
+      return [
+        404,
+        {
+          success: false,
+          message: 'Target consumer not found',
+          statusCode: 404,
+          errors: { error_code: 'NOT_FOUND' },
+        },
+      ];
+    }
+
+    const targetArea = targetConsumer.area_code;
+    const assignedAreas = new Set([
+      ...(account.assigned_area_codes || []),
+      ...state.schedules.filter((s) => s.assigned_agent_id === account.user_id).map((s) => s.area_code),
+    ]);
+
+    if (!targetArea || !assignedAreas.has(targetArea)) {
+      return [
+        400,
+        {
+          success: false,
+          message: `Target consumer area (${targetArea || 'unknown'}) is outside agent assigned routes`,
+          statusCode: 400,
+          errors: { error_code: 'OUTSIDE_ASSIGNED_ROUTE' },
+        },
+      ];
+    }
+
     const now = new Date().toISOString();
     const dispatchId = `disp-agt-${Date.now()}`;
 
@@ -467,7 +534,8 @@ export function setupMockAdapter(): MockAdapter | null {
           body: body.body,
           status: 'UNREAD',
           created_at: now,
-          recipient_id: body.target_user_id,
+          target_user_id: body.target_user_id,
+          read_by: [],
         },
         ...prev.notifications,
       ],
@@ -482,7 +550,7 @@ export function setupMockAdapter(): MockAdapter | null {
     return [202, res];
   });
 
-  // D. Notification Inbox (Filtered by Recipient Ownership)
+  // D. Notification Inbox (Personal inbox: addressed to user or matching audience)
   mock.onGet('/api/v1/notifications').reply((config) => {
     const { account, errorResponse } = resolveAccount(config);
     if (errorResponse) return errorResponse;
@@ -490,34 +558,42 @@ export function setupMockAdapter(): MockAdapter | null {
     const state = getStoreState();
     const params = (config.params || {}) as Record<string, string | boolean | undefined>;
 
-    // Ownership: users only see notifications targeted to them or broadcast to their group
-    let filtered = state.notifications.filter((n) => {
-      if (account!.role === 'ADMIN') return true;
-      if (n.recipient_id && n.recipient_id === account!.user_id) return true;
+    // Personal inbox contains only notifications addressed to the signed-in user or matching audience (applied to admins too)
+    const filtered = state.notifications.filter((n) => {
+      // Direct notification to this user
+      if (n.target_user_id && n.target_user_id === account!.user_id) return true;
+      // Broadcast to all
       if (n.target_type === 'ALL') return true;
+      // Broadcast to user's role
       if (n.target_type === 'ROLE' && n.target_value === account!.role) return true;
-      if (n.target_type === 'PINCODE' && n.target_value === account!.area_code) return true;
-      if (!n.recipient_id && !n.target_type && account!.role === 'CONSUMER') return true;
+      // Location broadcast to consumer's area
+      if (n.target_type === 'PINCODE' && account!.role === 'CONSUMER' && n.target_value === account!.area_code) {
+        return true;
+      }
       return false;
     });
 
-    if (params.unread_only === true || params.unread_only === 'true') {
-      filtered = filtered.filter((n) => n.status === 'UNREAD');
-    }
+    // Account-specific read status for each recipient (preserving locked Section 3 response shape)
+    const mapped = filtered.map((n) => {
+      const isRead =
+        (Array.isArray(n.read_by) && n.read_by.includes(account!.user_id)) ||
+        (n.status === 'READ' && n.target_user_id === account!.user_id);
+      return {
+        id: n.id,
+        title: n.title,
+        body: n.body,
+        status: (isRead ? 'READ' : 'UNREAD') as 'UNREAD' | 'READ',
+        created_at: n.created_at,
+      };
+    });
+
+    const unreadOnly = params.unread_only === true || params.unread_only === 'true';
+    const finalItems = unreadOnly ? mapped.filter((n) => n.status === 'UNREAD') : mapped;
 
     const page = Math.max(0, Number(params.page) || 0);
     const size = Math.max(1, Number(params.size) || 20);
-    const total = filtered.length;
-    const paged = filtered.slice(page * size, (page + 1) * size);
-
-    // Strip internal recipient/target tracking to preserve exact Section 3.3 wire contract
-    const content = paged.map(({ id, title, body, status, created_at }) => ({
-      id,
-      title,
-      body,
-      status,
-      created_at,
-    }));
+    const total = finalItems.length;
+    const content = finalItems.slice(page * size, (page + 1) * size);
 
     const res: NotificationsInboxResponse = {
       content,
@@ -530,7 +606,7 @@ export function setupMockAdapter(): MockAdapter | null {
     return [200, res];
   });
 
-  // E. Mark Notification as Read (Enforces recipient ownership)
+  // E. Mark Notification as Read (Updates read status specifically for this recipient)
   mock.onPatch(/\/api\/v1\/notifications\/[^/]+\/read/).reply((config) => {
     const { account, errorResponse } = resolveAccount(config);
     if (errorResponse) return errorResponse;
@@ -555,16 +631,14 @@ export function setupMockAdapter(): MockAdapter | null {
       ];
     }
 
-    // Ownership check: Mark-read should update only an existing notification owned by that recipient
-    const isOwner =
-      account!.role === 'ADMIN' ||
-      (existing.recipient_id && existing.recipient_id === account!.user_id) ||
+    // Ownership check: must be addressed to this user or their matching audience
+    const isRecipient =
+      (existing.target_user_id && existing.target_user_id === account!.user_id) ||
       existing.target_type === 'ALL' ||
       (existing.target_type === 'ROLE' && existing.target_value === account!.role) ||
-      (existing.target_type === 'PINCODE' && existing.target_value === account!.area_code) ||
-      (!existing.recipient_id && !existing.target_type && account!.role === 'CONSUMER');
+      (existing.target_type === 'PINCODE' && account!.role === 'CONSUMER' && existing.target_value === account!.area_code);
 
-    if (!isOwner) {
+    if (!isRecipient) {
       return [
         403,
         {
@@ -577,11 +651,21 @@ export function setupMockAdapter(): MockAdapter | null {
       ];
     }
 
+    // Update read status for this specific recipient
     setStoreState((prev) => ({
       ...prev,
-      notifications: prev.notifications.map((n) =>
-        n.id === notifId ? { ...n, status: 'READ' } : n
-      ),
+      notifications: prev.notifications.map((n) => {
+        if (n.id !== notifId) return n;
+        const currentReadBy = Array.isArray(n.read_by) ? n.read_by : [];
+        const nextReadBy = currentReadBy.includes(account!.user_id)
+          ? currentReadBy
+          : [...currentReadBy, account!.user_id];
+        return {
+          ...n,
+          status: n.target_user_id === account!.user_id ? ('READ' as const) : n.status,
+          read_by: nextReadBy,
+        };
+      }),
     }));
 
     const res: NotificationMarkReadResponse = {
@@ -592,7 +676,7 @@ export function setupMockAdapter(): MockAdapter | null {
     return [200, res];
   });
 
-  console.log('🔌 [mockAdapter] Axios mock adapter registered with ownership enforcement.');
+  console.log('🔌 [mockAdapter] Axios mock adapter registered with exact session resolution.');
   return mock;
 }
 

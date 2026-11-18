@@ -167,9 +167,22 @@ export interface NotificationItem {
   body: string;
   status: 'UNREAD' | 'READ';
   created_at: string;
-  recipient_id?: string;
+  target_user_id?: string;
   target_type?: NotificationTargetType;
   target_value?: string;
+  read_by?: string[];
+}
+
+// Session object exposed to application (refresh_token discarded at auth service boundary)
+export interface UserSession {
+  user_id: string;
+  name?: string;
+  username?: string;
+  mobile_number?: string;
+  role: UserRole;
+  access_token: string;
+  token_type: 'Bearer';
+  expires_in: number;
 }
 
 export interface DemoSession {
