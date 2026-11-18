@@ -92,7 +92,7 @@ export function getInitialSeedState(): DemoStoreState {
         mobile_number: '9876543211',
         password: 'Agent@123',
         role: 'AGENT',
-        assigned_area_codes: ['600002', '600096'],
+        assigned_area_codes: ['600001', '600002', '600096'],
         vehicle_id: 'TN-01-WM-5120',
       },
     ],

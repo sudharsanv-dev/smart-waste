@@ -127,6 +127,14 @@ export const backendGapService = {
     return response.data;
   },
 
+  async claimPickupRequest(requestId: string): Promise<GapServiceResponse<ManualPickupRequestItem>> {
+    if (!IS_DEMO || !USE_MOCK_API) {
+      return getUnavailableResult(`POST /api/v1/requests/${requestId}/claim`);
+    }
+    const response = await axiosClient.post<ManualPickupRequestItem>(`/api/v1/requests/${requestId}/claim`);
+    return response.data;
+  },
+
   // 8. Support Tickets // TODO_BACKEND_SATHEESH
   async getSupportTickets(): Promise<GapServiceResponse<SupportTicketsResponse>> {
     if (!IS_DEMO || !USE_MOCK_API) {

@@ -15,6 +15,11 @@ import { ConsumerPickupRequestsPage } from './pages/consumer/ConsumerPickupReque
 import { ConsumerPaymentsPage } from './pages/consumer/ConsumerPaymentsPage';
 import { ConsumerSupportPage } from './pages/consumer/ConsumerSupportPage';
 import { AgentDashboard } from './pages/agent/AgentDashboard';
+import { AgentSchedulesPage } from './pages/agent/AgentSchedulesPage';
+import { AgentScanQRPage } from './pages/agent/AgentScanQRPage';
+import { AgentPickupRequestsPage } from './pages/agent/AgentPickupRequestsPage';
+import { AgentFeeHistoryPage } from './pages/agent/AgentFeeHistoryPage';
+import { AgentSupportPage } from './pages/agent/AgentSupportPage';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
 import './api/mockAdapter'; // Auto-register mock adapter if in demo mode
 
@@ -119,6 +124,66 @@ export const AppRoutes: React.FC = () => {
       />
 
       {/* Role Protected Agent Routes */}
+      <Route
+        path="/agent"
+        element={
+          <ProtectedRoute allowedRoles={['AGENT']}>
+            <AppShell>
+              <AgentDashboard />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agent/schedules"
+        element={
+          <ProtectedRoute allowedRoles={['AGENT']}>
+            <AppShell>
+              <AgentSchedulesPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agent/scan"
+        element={
+          <ProtectedRoute allowedRoles={['AGENT']}>
+            <AppShell>
+              <AgentScanQRPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agent/requests"
+        element={
+          <ProtectedRoute allowedRoles={['AGENT']}>
+            <AppShell>
+              <AgentPickupRequestsPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agent/payments"
+        element={
+          <ProtectedRoute allowedRoles={['AGENT']}>
+            <AppShell>
+              <AgentFeeHistoryPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agent/support"
+        element={
+          <ProtectedRoute allowedRoles={['AGENT']}>
+            <AppShell>
+              <AgentSupportPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/agent/*"
         element={

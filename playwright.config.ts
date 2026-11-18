@@ -14,6 +14,10 @@ export default defineConfig({
   use: {
     baseURL: 'http://localhost:4173',
     trace: 'on-first-retry',
+    permissions: ['camera'],
+    launchOptions: {
+      args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+    },
   },
   projects: [
     {
@@ -26,8 +30,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run build:demo && npm run preview',
-    port: 4173,
-    reuseExistingServer: !process.env.CI,
+    command: 'npm run preview',
+    url: 'http://localhost:4173',
+    reuseExistingServer: true,
   },
 });

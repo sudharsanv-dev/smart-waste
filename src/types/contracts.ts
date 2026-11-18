@@ -286,8 +286,9 @@ export interface AgentScanQRRequest {
 
 export interface AgentScanQRResponse {
   collection_id: string;
-  status: 'COLLECTED';
+  status: 'COLLECTED' | 'ALREADY_COLLECTED';
   timestamp: string;
+  message?: string;
 }
 
 // 5. Payments & Razorpay Verify // TODO_BACKEND_SATHEESH

@@ -16,7 +16,7 @@ import {
   getPaymentOrder,
   updatePaymentOrder,
 } from './mockStore';
-import { DemoUserAccount } from './mockData';
+import { DemoUserAccount, StoredCollectionRecord } from './mockData';
 import {
   AuthSuccessResponse,
   AuthErrorResponse,
@@ -35,6 +35,8 @@ import {
   ConsumerRegisterRequest,
   ConsumerRegisterResponse,
   ConsumerDashboardResponse,
+  AgentScanQRRequest,
+  AgentScanQRResponse,
   CreatePaymentOrderRequest,
   CreatePaymentOrderResponse,
   VerifyPaymentRequest,
@@ -825,6 +827,141 @@ export function setupMockAdapter(): MockAdapter | null {
     return [200, res];
   });
 
+  // 4. Agent QR Scan Verification & Duplicate Prevention (Section 4 // TODO_BACKEND_SATHEESH)
+  mock.onPost('/api/v1/agent/collections/scan-qr').reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+    if (account?.role !== 'AGENT') {
+      return [
+        403,
+        {
+          success: false,
+          message: 'Forbidden: Agent role required',
+          statusCode: 403,
+          data: null,
+          errors: { error_code: 'FORBIDDEN' },
+        },
+      ];
+    }
+
+    let body: AgentScanQRRequest;
+    try {
+      body = typeof config.data === 'string' ? JSON.parse(config.data) : (config.data || {});
+    } catch {
+      return [400, { success: false, message: 'Invalid payload', statusCode: 400, errors: { error_code: 'INVALID_PAYLOAD' } }];
+    }
+
+    if (!body.qr_payload) {
+      return [
+        400,
+        {
+          success: false,
+          message: 'Missing required qr_payload',
+          statusCode: 400,
+          errors: { error_code: 'MISSING_QR_PAYLOAD' },
+        },
+      ];
+    }
+
+    const state = getStoreState();
+
+    // Resolve target consumer / household from token
+    const targetConsumer =
+      state.accounts.find((a) => a.qr_payload === body.qr_payload) ||
+      (body.consumer_id ? state.accounts.find((a) => a.user_id === body.consumer_id) : undefined);
+
+    const targetHousehold =
+      state.households.find((h) => h.qr_payload === body.qr_payload) ||
+      (targetConsumer ? state.households.find((h) => h.mobile_number === targetConsumer.mobile_number) : undefined);
+
+    if (!targetConsumer && !targetHousehold) {
+      return [
+        404,
+        {
+          success: false,
+          message: 'Household QR code not recognized or unregistered',
+          statusCode: 404,
+          errors: { error_code: 'HOUSEHOLD_NOT_FOUND' },
+        },
+      ];
+    }
+
+    const targetArea = targetConsumer?.area_code || targetHousehold?.area_code || '';
+    const assignedAreas = new Set([
+      ...(account.assigned_area_codes || []),
+      ...state.schedules.filter((s) => s.assigned_agent_id === account.user_id).map((s) => s.area_code),
+      account.area_code || '600001',
+    ]);
+
+    if (!targetArea || !assignedAreas.has(targetArea)) {
+      return [
+        400,
+        {
+          success: false,
+          message: `Target household area (Ward ${targetArea || 'unknown'}) is outside agent assigned routes`,
+          statusCode: 400,
+          errors: { error_code: 'OUTSIDE_ASSIGNED_ROUTE' },
+        },
+      ];
+    }
+
+    // Determine current date in Asia/Kolkata
+    const todayIST = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+
+    const consumerUserId = targetConsumer?.user_id || targetHousehold?.id || 'unknown';
+
+    // Duplicate Prevention: Check if already collected today for this household
+    const existingCollection = (state.collections || []).find(
+      (c) =>
+        c.date === todayIST &&
+        (c.qr_payload === body.qr_payload || (consumerUserId && c.consumer_id === consumerUserId))
+    );
+
+    if (existingCollection) {
+      const res: AgentScanQRResponse = {
+        collection_id: existingCollection.id,
+        status: 'ALREADY_COLLECTED',
+        timestamp: existingCollection.timestamp,
+        message: 'Household waste collection already completed for today. Duplicate scan ignored.',
+      };
+      return [200, res];
+    }
+
+    const nowIso = new Date().toISOString();
+    const newCollectionId = `col-${Date.now()}`;
+    const newCollection: StoredCollectionRecord = {
+      id: newCollectionId,
+      consumer_id: consumerUserId,
+      household_id: targetHousehold?.id || `hh-${consumerUserId}`,
+      qr_payload: body.qr_payload,
+      date: todayIST,
+      timestamp: nowIso,
+      status: 'COLLECTED',
+      agent_id: account.user_id,
+      agent_name: account.name,
+      waste_weight_kg: Number(body.waste_weight_kg) || 3.5,
+      notes: body.notes || 'Routine segregated waste collection',
+    };
+
+    setStoreState((prev) => ({
+      ...prev,
+      collections: [newCollection, ...(prev.collections || [])],
+    }));
+
+    const res: AgentScanQRResponse = {
+      collection_id: newCollectionId,
+      status: 'COLLECTED',
+      timestamp: nowIso,
+      message: 'Waste collection successfully recorded and credited.',
+    };
+    return [201, res];
+  });
+
   // 5. Payments: Create Order & Verify (Section 4 // TODO_BACKEND_SATHEESH)
   mock.onPost('/api/v1/payments/create-order').reply((config) => {
     const { account, errorResponse } = resolveAccount(config);
@@ -1027,40 +1164,145 @@ export function setupMockAdapter(): MockAdapter | null {
 
     const state = getStoreState();
     const params = (config.params || {}) as Record<string, string | undefined>;
-    let userPayments = state.payments.filter((p) => p.consumer_id === account!.user_id);
+    let records: PaymentHistoryItem[] = [];
+
+    if (account!.role === 'CONSUMER') {
+      records = state.payments.filter((p) => p.consumer_id === account!.user_id);
+    } else if (account!.role === 'AGENT') {
+      // Filtered strictly to agent-authorized records (routes assigned to this agent)
+      const assignedAreas = new Set([
+        ...(account!.assigned_area_codes || []),
+        ...state.schedules.filter((s) => s.assigned_agent_id === account!.user_id).map((s) => s.area_code),
+        account!.area_code || '600001',
+      ]);
+      records = state.payments.filter((p) => assignedAreas.has(p.area_code));
+    } else {
+      records = state.payments;
+    }
 
     if (params.status) {
-      userPayments = userPayments.filter((p) => p.status === params.status);
+      records = records.filter((p) => p.status === params.status);
+    }
+    if (params.start_date) {
+      records = records.filter((p) => (p.paid_at || p.due_date || '') >= params.start_date!);
+    }
+    if (params.end_date) {
+      records = records.filter((p) => (p.paid_at || p.due_date || '') <= params.end_date!);
     }
 
     const res: PaymentHistoryResponse = {
-      content: userPayments,
+      content: records,
       page_number: 0,
       page_size: 20,
-      total_elements: userPayments.length,
+      total_elements: records.length,
       total_pages: 1,
       last: true,
     };
     return [200, res];
   });
 
-  // 7. Manual Pickup Requests (Section 4 // TODO_BACKEND_SATHEESH)
+  // 7. Manual Pickup Requests & Claims (Section 4 // TODO_BACKEND_SATHEESH)
   mock.onGet('/api/v1/requests').reply((config) => {
     const { account, errorResponse } = resolveAccount(config);
     if (errorResponse) return errorResponse;
 
     const state = getStoreState();
-    const userReqs = state.pickupRequests.filter((r) => r.consumer_id === account!.user_id);
+    const params = (config.params || {}) as Record<string, string | undefined>;
+    let reqs: ManualPickupRequestItem[] = [];
+
+    if (account!.role === 'CONSUMER') {
+      reqs = state.pickupRequests.filter((r) => r.consumer_id === account!.user_id);
+    } else if (account!.role === 'AGENT') {
+      const assignedAreas = new Set([
+        ...(account!.assigned_area_codes || []),
+        ...state.schedules.filter((s) => s.assigned_agent_id === account!.user_id).map((s) => s.area_code),
+        account!.area_code || '600001',
+      ]);
+      reqs = state.pickupRequests.filter((r) => assignedAreas.has(r.area_code));
+    } else {
+      reqs = state.pickupRequests;
+    }
+
+    if (params.status) {
+      reqs = reqs.filter((r) => r.status === params.status);
+    }
 
     const res: ManualPickupRequestsResponse = {
-      content: userReqs,
+      content: reqs,
       page_number: 0,
       page_size: 20,
-      total_elements: userReqs.length,
+      total_elements: reqs.length,
       total_pages: 1,
       last: true,
     };
     return [200, res];
+  });
+
+  mock.onPost(/\/api\/v1\/requests\/[^/]+\/claim/).reply((config) => {
+    const { account, errorResponse } = resolveAccount(config);
+    if (errorResponse) return errorResponse;
+    if (account?.role !== 'AGENT') {
+      return [
+        403,
+        {
+          success: false,
+          message: 'Forbidden: Agent role required',
+          statusCode: 403,
+          errors: { error_code: 'FORBIDDEN' },
+        },
+      ];
+    }
+
+    const parts = config.url?.split('/') || [];
+    const claimIdx = parts.indexOf('claim');
+    const requestId = claimIdx > 0 ? parts[claimIdx - 1] : parts[parts.length - 2];
+
+    const state = getStoreState();
+    const target = state.pickupRequests.find((r) => r.id === requestId);
+
+    if (!target) {
+      return [
+        404,
+        {
+          success: false,
+          message: 'Pickup request not found',
+          statusCode: 404,
+          errors: { error_code: 'NOT_FOUND' },
+        },
+      ];
+    }
+
+    // Atomic conflict verification: Request MUST be PENDING
+    if (target.status !== 'PENDING') {
+      return [
+        409,
+        {
+          success: false,
+          message: `This request has already been claimed by another agent (${target.claimed_by_agent_name || 'claimed'}).`,
+          statusCode: 409,
+          data: null,
+          errors: {
+            error_code: 'CONFLICT',
+            current_status: target.status,
+            owner_id: target.claimed_by_agent_id,
+          },
+        },
+      ];
+    }
+
+    const updated: ManualPickupRequestItem = {
+      ...target,
+      status: 'CLAIMED',
+      claimed_by_agent_id: account.user_id,
+      claimed_by_agent_name: account.name,
+    };
+
+    setStoreState((prev) => ({
+      ...prev,
+      pickupRequests: prev.pickupRequests.map((r) => (r.id === requestId ? updated : r)),
+    }));
+
+    return [200, updated];
   });
 
   mock.onPost('/api/v1/requests').reply((config) => {
@@ -1131,7 +1373,7 @@ export function setupMockAdapter(): MockAdapter | null {
       ticket_id: `tkt-${Date.now()}`,
       user_id: account!.user_id,
       user_name: account!.name,
-      user_role: 'CONSUMER',
+      user_role: account!.role,
       subject: body.subject,
       category: body.category,
       description: body.description,

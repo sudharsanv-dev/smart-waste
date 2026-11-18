@@ -42,10 +42,12 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
       { label: 'Support', path: '/consumer/support', icon: HelpCircle },
     ],
     AGENT: [
-      { label: 'Assignments', path: '/agent', icon: LayoutDashboard },
-      { label: 'Route', path: '/agent/schedules', icon: Calendar },
+      { label: 'Overview', path: '/agent', icon: LayoutDashboard },
+      { label: 'Route & Schedule', path: '/agent/schedules', icon: Calendar },
       { label: 'Scan QR', path: '/agent/scan', icon: QrCode },
-      { label: 'Requests', path: '/agent/requests', icon: Truck },
+      { label: 'Pickup Claims', path: '/agent/requests', icon: Truck },
+      { label: 'Fee Collections', path: '/agent/payments', icon: CreditCard },
+      { label: 'Support Desk', path: '/agent/support', icon: HelpCircle },
     ],
     ADMIN: [
       { label: 'Overview', path: '/admin', icon: LayoutDashboard },
