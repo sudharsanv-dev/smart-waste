@@ -61,6 +61,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 expires_in: remainingSec,
                 area_code: account.area_code,
                 qr_payload: account.qr_payload,
+                assigned_area_codes: account.assigned_area_codes,
+                vehicle_id: account.vehicle_id,
               };
               setToken(validSession.token);
               setUser(restoredUser);
@@ -114,6 +116,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       ...session,
       area_code: matchedAccount?.area_code,
       qr_payload: matchedAccount?.qr_payload,
+      assigned_area_codes: matchedAccount?.assigned_area_codes,
+      vehicle_id: matchedAccount?.vehicle_id,
     };
 
     setUser(enrichedSession);
@@ -132,6 +136,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         expires_at: Date.now() + (session.expires_in || 3600) * 1000,
         area_code: matchedAccount?.area_code,
         qr_payload: matchedAccount?.qr_payload,
+        assigned_area_codes: matchedAccount?.assigned_area_codes,
+        vehicle_id: matchedAccount?.vehicle_id,
       };
       try {
         sessionStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(minimalSession));

@@ -9,10 +9,19 @@ import { LoadingSpinner, EmptyState } from '../../components/layout/LoadingEmpty
 import { Calendar, Clock, MapPin, Edit3, Save, CheckCircle } from 'lucide-react';
 import { IS_DEMO } from '../../lib/env';
 
+const getTodayIST = () => {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+};
+
 export const AgentSchedulesPage: React.FC = () => {
   const [schedules, setSchedules] = useState<AgentScheduleItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [startDate, setStartDate] = useState('2026-11-15');
+  const [startDate, setStartDate] = useState(getTodayIST);
   const [endDate, setEndDate] = useState('2026-11-30');
   const [routeNotes, setRouteNotes] = useState<string>(() => {
     return localStorage.getItem('agent_route_notes') || 'Start shift at 07:00 AM at North Gate depot. Prioritize commercial establishments on Sunrise Avenue first.';

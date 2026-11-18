@@ -2,11 +2,13 @@
 // Screen 1: Collection Agent Overview & Shift Landing Page (Phase 3)
 // Features today's route status, shift metrics, and task-based arrival notification dispatcher
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { agentService } from '../../api/agentService';
 import { AgentScheduleItem } from '../../types/contracts';
 import { LoadingSpinner, EmptyState } from '../../components/layout/LoadingEmptyError';
+import { getStoreState } from '../../api/mockStore';
+import { IS_DEMO } from '../../lib/env';
 import {
   Truck,
   Calendar,
@@ -19,6 +21,15 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+
+const getTodayIST = () => {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+};
 
 export const AgentDashboard: React.FC = () => {
   const { user } = useAuth();
@@ -34,7 +45,8 @@ export const AgentDashboard: React.FC = () => {
     async function loadData() {
       setIsLoading(true);
       try {
-        const res = await agentService.getSchedules({ start_date: '2026-11-15', end_date: '2026-11-30' });
+        const today = getTodayIST();
+        const res = await agentService.getSchedules({ start_date: today });
         setSchedules(res.content || []);
       } catch (err) {
         console.error('Failed to load agent schedules:', err);
@@ -44,6 +56,40 @@ export const AgentDashboard: React.FC = () => {
     }
     loadData();
   }, []);
+
+  // Derive arrival recipients from assigned work
+  const assignedRecipients = useMemo(() => {
+    const assignedWards = new Set([
+      ...(user?.assigned_area_codes || []),
+      ...schedules.map((s) => s.area_code),
+      ...(user?.area_code ? [user.area_code] : []),
+    ]);
+
+    if (IS_DEMO) {
+      try {
+        const state = getStoreState();
+        return state.households.filter((h) => assignedWards.has(h.area_code));
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }, [user, schedules]);
+
+  useEffect(() => {
+    if (assignedRecipients.length > 0) {
+      const firstValid = assignedRecipients[0].mobile_number === '9876543210'
+        ? 'c1d2e3f4-a5b6-7890-1234-56789abcdef0'
+        : assignedRecipients[0].id;
+      setTargetUserId((prev) =>
+        assignedRecipients.some(
+          (h) => h.id === prev || (h.mobile_number === '9876543210' && prev === 'c1d2e3f4-a5b6-7890-1234-56789abcdef0')
+        )
+          ? prev
+          : firstValid
+      );
+    }
+  }, [assignedRecipients]);
 
   const handleNotifyArrival = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,7 +130,7 @@ export const AgentDashboard: React.FC = () => {
             Welcome back, {user?.name || 'Agent'}
           </h1>
           <p className="text-xs text-blue-100 mt-1">
-            Designated Vehicle: <strong data-testid="vehicle-id-badge">TN-01-WM-4042</strong> • Primary Assigned Wards: <strong>600001, 600040</strong>
+            Designated Vehicle: <strong data-testid="vehicle-id-badge">{user?.vehicle_id || 'TN-01-WM-4042'}</strong> • Primary Assigned Wards: <strong>{(user?.assigned_area_codes || (user?.area_code ? [user.area_code] : ['600001'])).join(', ')}</strong>
           </p>
         </div>
 
@@ -184,8 +230,16 @@ export const AgentDashboard: React.FC = () => {
               data-testid="target-consumer-select"
               className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none"
             >
-              <option value="c1d2e3f4-a5b6-7890-1234-56789abcdef0">John Doe (Ward 600001 - Sunrise Ave)</option>
-              <option value="hh-unrelated-999">Unrelated Resident (Ward 600099 - Test Boundary)</option>
+              {assignedRecipients.length > 0 ? (
+                assignedRecipients.map((h) => (
+                  <option key={h.id} value={h.mobile_number === '9876543210' ? 'c1d2e3f4-a5b6-7890-1234-56789abcdef0' : h.id}>
+                    {h.name} (Ward {h.area_code} - {h.address})
+                  </option>
+                ))
+              ) : (
+                <option value="c1d2e3f4-a5b6-7890-1234-56789abcdef0">John Doe (Ward 600001 - Sunrise Ave)</option>
+              )}
+              <option value="cons-outside-ward-test">Unrelated Resident (Ward 600099 - Test Boundary)</option>
             </select>
           </div>
 

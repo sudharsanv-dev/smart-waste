@@ -1,12 +1,15 @@
 // src/pages/agent/AgentScanQRPage.tsx
 // Screen 3: Agent Household QR Scanner & Waste Collection (Phase 3)
-// Proves Phase 3 Exit Gate: Camera lifecycle management (starts on user action, released on exit),
-// duplicate prevention (repeat scan leaves count unchanged), and demo simulation fallback (hidden in production)
+// Real optical QR frame decoding via html5-qrcode, camera lifecycle management (hardware allocated on user action,
+// released on stop/navigation/late permission), honest torch capability reporting, explicit review and confirmation gate,
+// and demo simulation presets strictly hidden in production builds.
 
 import React, { useState, useRef, useEffect } from 'react';
+import { Html5Qrcode, Html5QrcodeScannerState } from 'html5-qrcode';
 import { agentService } from '../../api/agentService';
 import { AgentScanQRResponse } from '../../types/contracts';
 import { LoadingSpinner } from '../../components/layout/LoadingEmptyError';
+import { getStoreState } from '../../api/mockStore';
 import {
   QrCode,
   Camera,
@@ -17,90 +20,259 @@ import {
   AlertCircle,
   Scale,
   ShieldCheck,
+  Upload,
+  UserCheck,
+  FileCheck2,
+  RotateCcw,
 } from 'lucide-react';
 import { ENABLE_DEMO_TOOLS, IS_DEMO } from '../../lib/env';
 
+interface DecodedHousehold {
+  qr_payload: string;
+  name: string;
+  address: string;
+  area_code: string;
+  consumer_id?: string;
+}
+
 export const AgentScanQRPage: React.FC = () => {
+  // Camera & Scanner State
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [torchNotice, setTorchNotice] = useState<string | null>(null);
+  const [isDecodingFile, setIsDecodingFile] = useState(false);
 
-  // Scan & Submission State
-  const [qrPayload, setQrPayload] = useState('GPC-QR-CONS-C1D2E3F4A5B67890');
-  const [wasteWeight, setWasteWeight] = useState('3.5');
-  const [notes, setNotes] = useState('Routine segregated curbside collection');
+  // Scan & Confirmation State (starts with EMPTY scan result)
+  const [qrPayload, setQrPayload] = useState<string>('');
+  const [decodedHousehold, setDecodedHousehold] = useState<DecodedHousehold | null>(null);
+  const [wasteWeight, setWasteWeight] = useState<string>('3.5');
+  const [notes, setNotes] = useState<string>('Routine segregated curbside collection');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [scanResult, setScanResult] = useState<AgentScanQRResponse | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
 
+  // Scanner Instance & Lifecycle Refs
+  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const isStartingRef = useRef<boolean>(false);
+  const isMountedRef = useRef<boolean>(true);
+
+  // Resolve household details from opaque QR payload
+  const resolveHouseholdDetails = (payload: string): DecodedHousehold => {
+    let matchedConsumer: { user_id?: string; name?: string; area_code?: string; mobile_number?: string } | undefined;
+    let matchedHousehold: { id?: string; name?: string; address?: string; area_code?: string; mobile_number?: string } | undefined;
+
+    if (IS_DEMO) {
+      try {
+        const state = getStoreState();
+        matchedConsumer = state.accounts.find((a) => a.qr_payload === payload);
+        const consumerMobile = matchedConsumer?.mobile_number;
+        matchedHousehold =
+          state.households.find((h) => h.qr_payload === payload) ||
+          (consumerMobile
+            ? state.households.find((h) => h.mobile_number === consumerMobile)
+            : undefined);
+      } catch {
+        // demo store fallback
+      }
+    }
+
+    return {
+      qr_payload: payload,
+      name: matchedConsumer?.name || matchedHousehold?.name || 'Curbside Resident',
+      address: matchedHousehold?.address || 'Designated Curbside Address',
+      area_code: matchedHousehold?.area_code || matchedConsumer?.area_code || '600001',
+      consumer_id: matchedConsumer?.user_id || matchedHousehold?.id,
+    };
+  };
+
+  // Called when a QR code is successfully decoded from camera stream or image file
+  const handleDecodedQR = async (decodedText: string) => {
+    if (!decodedText || !decodedText.trim()) return;
+    const trimmed = decodedText.trim();
+    setQrPayload(trimmed);
+    setScanResult(null);
+    setScanError(null);
+
+    // Stop live scanner cleanly after a successful decode
+    if (scannerRef.current) {
+      try {
+        const state = scannerRef.current.getState?.();
+        if (state === Html5QrcodeScannerState.SCANNING || (scannerRef.current as unknown as { isScanning?: boolean }).isScanning) {
+          await scannerRef.current.stop();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    setIsCameraActive(false);
+
+    // Populate decoded household for explicit user confirmation
+    const details = resolveHouseholdDetails(trimmed);
+    setDecodedHousehold(details);
+  };
+
   // Camera Lifecycle: Start camera ONLY on explicit user action
   const startCamera = async () => {
     setCameraError(null);
+    setTorchNotice(null);
+    setScanError(null);
+    if (isStartingRef.current || isCameraActive) return;
+
+    isStartingRef.current = true;
     try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('Camera API is not supported in this browser environment.');
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera API (getUserMedia) is not supported in this browser environment.');
       }
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-      });
-      setStream(mediaStream);
+
+      let scanner = scannerRef.current;
+      if (!scanner) {
+        scanner = new Html5Qrcode('agent-qr-viewfinder');
+        scannerRef.current = scanner;
+      }
+
+      await scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (decodedText) => {
+          handleDecodedQR(decodedText);
+        },
+        () => {
+          // Normal frame with no QR code detected; keep listening
+        }
+      );
+
+      // Guard against late permission response if user stopped or navigated away
+      if (!isMountedRef.current || !isStartingRef.current) {
+        try {
+          await scanner.stop();
+          scanner.clear();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
       setIsCameraActive(true);
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-      }
     } catch (err: unknown) {
-      if (IS_DEMO) {
-        // Fallback for automated headless test or devices without optical hardware in demo mode
-        setIsCameraActive(true);
+      if (!isMountedRef.current) return;
+      setIsCameraActive(false);
+      const errStr = (err as { message?: string })?.message || String(err);
+      if (
+        errStr.toLowerCase().includes('permission') ||
+        errStr.toLowerCase().includes('notallowed') ||
+        errStr.toLowerCase().includes('denied')
+      ) {
+        setCameraError(
+          'Camera permission was denied by user or security policy. Please allow camera permissions to scan household placards.'
+        );
       } else {
-        const errObj = err as { message?: string };
-        setCameraError(errObj.message || 'Camera permission denied or camera device unavailable.');
-        setIsCameraActive(false);
+        setCameraError(`Camera initialization failed: ${errStr}`);
       }
+    } finally {
+      isStartingRef.current = false;
     }
   };
 
-  // Camera Lifecycle: Release camera on exit or explicit stop
-  const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      setStream(null);
+  // Camera Lifecycle: Release camera hardware on stop or navigation
+  const stopCamera = async () => {
+    isStartingRef.current = false;
+    if (scannerRef.current) {
+      try {
+        const state = scannerRef.current.getState?.();
+        if (state === Html5QrcodeScannerState.SCANNING || (scannerRef.current as unknown as { isScanning?: boolean }).isScanning) {
+          await scannerRef.current.stop();
+        }
+        scannerRef.current.clear();
+      } catch (err) {
+        console.warn('Error releasing camera scanner:', err);
+      }
     }
     setIsCameraActive(false);
     setTorchOn(false);
+    setTorchNotice(null);
   };
 
+  // Torch / Flashlight Control with honest fallback handling
   const toggleTorch = async () => {
-    if (!stream) return;
-    const track = stream.getVideoTracks()[0];
-    if (track && 'applyConstraints' in track) {
-      try {
-        const nextTorch = !torchOn;
-        await (track as unknown as { applyConstraints?: (c: unknown) => Promise<void> }).applyConstraints?.({
-          advanced: [{ torch: nextTorch }],
-        });
-        setTorchOn(nextTorch);
-      } catch {
-        setTorchOn(!torchOn);
-      }
-    } else {
-      setTorchOn(!torchOn);
+    setTorchNotice(null);
+    if (!scannerRef.current || !isCameraActive) return;
+    try {
+      const nextTorch = !torchOn;
+      await scannerRef.current.applyVideoConstraints({
+        advanced: [{ torch: nextTorch } as MediaTrackConstraintSet],
+      });
+      setTorchOn(nextTorch);
+    } catch {
+      setTorchOn(false);
+      setTorchNotice('Torch / flashlight is not supported by this camera hardware or browser.');
     }
   };
 
-  // Clean up camera stream when leaving page (unmount)
+  // Image File QR Decoder (Known QR code image testing)
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsDecodingFile(true);
+    setScanError(null);
+    setCameraError(null);
+
+    try {
+      let scanner = scannerRef.current;
+      if (!scanner) {
+        scanner = new Html5Qrcode('agent-qr-viewfinder');
+        scannerRef.current = scanner;
+      }
+      const decodedText = await scanner.scanFile(file, true);
+      if (decodedText) {
+        await handleDecodedQR(decodedText);
+      } else {
+        setScanError('No readable QR code found in the uploaded image.');
+      }
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message || String(err);
+      setScanError(`Failed to decode QR code from file: ${msg}`);
+    } finally {
+      setIsDecodingFile(false);
+      e.target.value = '';
+    }
+  };
+
+  // Reset scan to start fresh
+  const handleClearScan = () => {
+    setQrPayload('');
+    setDecodedHousehold(null);
+    setScanResult(null);
+    setScanError(null);
+  };
+
+  // Unmount cleanup: release camera hardware on route change or navigation
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
+      isMountedRef.current = false;
+      isStartingRef.current = false;
+      if (scannerRef.current) {
+        try {
+          const state = scannerRef.current.getState?.();
+          if (state === Html5QrcodeScannerState.SCANNING || (scannerRef.current as unknown as { isScanning?: boolean }).isScanning) {
+            scannerRef.current
+              .stop()
+              .then(() => scannerRef.current?.clear())
+              .catch(() => {});
+          } else {
+            scannerRef.current.clear();
+          }
+        } catch {
+          // ignore
+        }
       }
     };
-  }, [stream]);
+  }, []);
 
-  // Submit scan to backend / mockAdapter
-  const handleSubmitScan = async (e?: React.FormEvent) => {
+  // Submit collection ONLY AFTER explicit confirmation
+  const handleSubmitCollection = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!qrPayload.trim()) return;
 
@@ -109,8 +281,10 @@ export const AgentScanQRPage: React.FC = () => {
     setScanError(null);
 
     try {
+      // Submits proposed contract payload: { qr_payload, consumer_id, waste_weight_kg, notes }
       const res = await agentService.scanCollectionQR({
         qr_payload: qrPayload.trim(),
+        consumer_id: decodedHousehold?.consumer_id,
         waste_weight_kg: parseFloat(wasteWeight) || 3.5,
         notes: notes.trim(),
       });
@@ -127,7 +301,7 @@ export const AgentScanQRPage: React.FC = () => {
 
   return (
     <div className="space-y-6" data-testid="agent-scan-page">
-      {/* Header */}
+      {/* Header & Camera Controls */}
       <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
@@ -135,11 +309,11 @@ export const AgentScanQRPage: React.FC = () => {
             <h1 className="text-xl font-bold text-gray-900">Household Sanitation QR Scanner</h1>
           </div>
           <p className="text-xs text-gray-500 mt-1">
-            Scan resident household QR placards to record daily segregated waste collections.
+            Optical QR frame decoder powered by html5-qrcode. Point camera at resident QR placard or upload image.
           </p>
         </div>
 
-        {/* Camera Control Button */}
+        {/* Camera Control Buttons */}
         <div className="flex items-center gap-2">
           {!isCameraActive ? (
             <button
@@ -175,8 +349,47 @@ export const AgentScanQRPage: React.FC = () => {
               </button>
             </>
           )}
+
+          {/* Known QR Image File Upload Decoder */}
+          <label
+            htmlFor="upload-qr-file-input"
+            data-testid="upload-qr-file-btn"
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 font-semibold text-xs rounded-lg cursor-pointer transition-colors border border-gray-200"
+            title="Decode known QR placard image"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>{isDecodingFile ? 'Decoding...' : 'Upload Image'}</span>
+          </label>
+          <input
+            id="upload-qr-file-input"
+            data-testid="upload-qr-file-input"
+            type="file"
+            accept="image/*"
+            onChange={handleFileUpload}
+            className="hidden"
+          />
         </div>
       </div>
+
+      {/* Honest Torch Notification */}
+      {torchNotice && (
+        <div
+          data-testid="torch-notice"
+          className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-center justify-between"
+        >
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <span>{torchNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTorchNotice(null)}
+            className="text-amber-800 text-xs font-bold hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Outcome Notification Banners */}
       {scanResult && scanResult.status === 'COLLECTED' && (
@@ -203,7 +416,7 @@ export const AgentScanQRPage: React.FC = () => {
           <div className="space-y-1">
             <h3 className="font-bold text-sm text-amber-900">Duplicate Scan Prevented (Idempotent)</h3>
             <p className="text-xs text-amber-800">
-              {scanResult.message || 'Household waste collection has already been recorded for today. Duplicate record was not created.'}
+              {scanResult.message || 'Household waste collection already completed for today. Duplicate scan ignored.'}
             </p>
           </div>
         </div>
@@ -222,37 +435,30 @@ export const AgentScanQRPage: React.FC = () => {
         </div>
       )}
 
-      {/* Camera Viewfinder & Preview */}
+      {/* Main Scanner Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Optical Viewfinder */}
-        <div className="bg-slate-900 rounded-2xl p-6 text-white text-center flex flex-col items-center justify-center min-h-[340px] relative overflow-hidden border border-slate-800 shadow-md">
-          {isCameraActive ? (
-            <div className="relative w-full max-w-xs aspect-square flex items-center justify-center overflow-hidden rounded-xl border-2 border-emerald-500">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                data-testid="camera-video-stream"
-                className="w-full h-full object-cover"
-              />
-              {/* Reticle Overlay */}
-              <div className="absolute inset-4 border-2 border-dashed border-emerald-400 rounded-lg pointer-events-none animate-pulse" />
-              <div className="absolute bottom-2 bg-black/60 px-2 py-0.5 rounded text-[10px] text-white">
-                Live Optical Feed Active
-              </div>
-            </div>
-          ) : (
+        {/* Optical Viewfinder Box */}
+        <div className="bg-slate-900 rounded-2xl p-4 text-white text-center flex flex-col items-center justify-center min-h-[340px] relative overflow-hidden border border-slate-800 shadow-md">
+          {/* html5-qrcode viewfinder container */}
+          <div
+            id="agent-qr-viewfinder"
+            data-testid="camera-video-stream"
+            className={`w-full max-w-sm aspect-square overflow-hidden rounded-xl ${
+              isCameraActive ? 'block' : 'hidden'
+            }`}
+          />
+
+          {!isCameraActive && (
             <div className="space-y-3 p-6">
               <div className="w-16 h-16 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center mx-auto">
                 <CameraOff className="w-8 h-8" />
               </div>
               <h3 className="text-sm font-bold text-slate-200">Optical Camera Standby</h3>
               <p className="text-xs text-slate-400 max-w-xs mx-auto">
-                Camera is unallocated. Click "Start Camera Scanner" above to request camera hardware and activate live scanning.
+                Camera is unallocated. Click "Start Camera Scanner" above or upload a known QR image to decode household placards.
               </p>
               {cameraError && (
-                <p className="text-xs text-rose-400 max-w-xs mx-auto mt-2 bg-rose-950/40 p-2 rounded border border-rose-800/40">
+                <p className="text-xs text-rose-400 max-w-xs mx-auto mt-2 bg-rose-950/40 p-2.5 rounded-lg border border-rose-800/40">
                   {cameraError}
                 </p>
               )}
@@ -260,61 +466,48 @@ export const AgentScanQRPage: React.FC = () => {
           )}
         </div>
 
-        {/* Demo Scan Simulation & Manual Input Panel */}
-        {IS_DEMO && ENABLE_DEMO_TOOLS ? (
-          <div
-            data-testid="demo-scan-simulation-panel"
-            className="bg-white rounded-2xl border border-gray-200 p-6 shadow-xs flex flex-col justify-between space-y-4"
-          >
-            <div>
+        {/* Confirmation Review Card or Demo Simulation Panel */}
+        <div className="space-y-4">
+          {/* Explicit Confirmation Gate: Displayed once QR is decoded */}
+          {qrPayload ? (
+            <div
+              data-testid="scan-confirmation-card"
+              className="bg-white rounded-2xl border-2 border-emerald-500/80 p-6 shadow-sm space-y-4"
+            >
               <div className="flex items-center justify-between pb-3 border-b border-gray-100">
                 <div className="flex items-center gap-2">
-                  <QrCode className="w-4 h-4 text-emerald-600" />
-                  <h3 className="text-sm font-bold text-gray-900">Scan Simulation (Demo Mode Only)</h3>
+                  <UserCheck className="w-5 h-5 text-emerald-600" />
+                  <h3 className="text-sm font-bold text-gray-900">Confirm Household Collection</h3>
                 </div>
-                <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
-                  Hidden on Prod
+                <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                  QR Decoded
                 </span>
               </div>
 
-              {/* Fast Preset Selection */}
-              <div className="space-y-1.5 pt-3">
-                <span className="text-[11px] font-bold text-gray-500 uppercase">Fast Presets:</span>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setQrPayload('GPC-QR-CONS-C1D2E3F4A5B67890')}
-                    data-testid="simulate-scan-john-btn"
-                    className="px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg transition-colors"
-                  >
-                    John Doe (Ward 600001)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setQrPayload('GPC-QR-CONS-UNRELATED999')}
-                    className="px-2.5 py-1 text-[11px] font-semibold bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 rounded-lg transition-colors"
-                  >
-                    Unrelated Area (Ward 600099)
-                  </button>
+              {/* Decoded Household Summary */}
+              <div className="bg-gray-50 rounded-xl p-3.5 space-y-2 border border-gray-200 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 font-medium">Resident:</span>
+                  <strong className="text-gray-900 font-bold" data-testid="decoded-resident-name">
+                    {decodedHousehold?.name || 'Curbside Resident'}
+                  </strong>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 font-medium">Assigned Ward:</span>
+                  <span className="font-semibold text-gray-800">
+                    Ward {decodedHousehold?.area_code || '600001'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-start">
+                  <span className="text-gray-500 font-medium">Placard Token:</span>
+                  <span className="font-mono text-[11px] text-gray-700 max-w-[200px] truncate" data-testid="decoded-token">
+                    {qrPayload}
+                  </span>
                 </div>
               </div>
 
-              {/* Form Inputs */}
-              <form onSubmit={handleSubmitScan} className="space-y-3 pt-3">
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                    Scanned Opaque QR Token
-                  </label>
-                  <input
-                    type="text"
-                    value={qrPayload}
-                    onChange={(e) => setQrPayload(e.target.value)}
-                    data-testid="scan-qr-input"
-                    className="w-full text-xs font-mono font-bold p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                    placeholder="e.g. GPC-QR-CONS-..."
-                  />
-                </div>
-
+              {/* Collection Parameters */}
+              <form onSubmit={handleSubmitCollection} className="space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
@@ -339,8 +532,9 @@ export const AgentScanQRPage: React.FC = () => {
                     <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
                       Segregation Check
                     </label>
-                    <div className="p-2.5 bg-emerald-50 text-emerald-800 text-xs font-bold rounded-lg border border-emerald-200 text-center">
-                      Segregated (Pass)
+                    <div className="p-2.5 bg-emerald-50 text-emerald-800 text-xs font-bold rounded-lg border border-emerald-200 text-center flex items-center justify-center gap-1">
+                      <FileCheck2 className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Segregated (Pass)</span>
                     </div>
                   </div>
                 </div>
@@ -358,36 +552,112 @@ export const AgentScanQRPage: React.FC = () => {
                   />
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  data-testid="submit-scan-btn"
-                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2"
-                >
-                  {isSubmitting ? (
-                    <LoadingSpinner size="sm" label="Verifying & Recording..." />
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Submit Collection Record</span>
-                    </>
-                  )}
-                </button>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    data-testid="submit-scan-btn"
+                    className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2"
+                  >
+                    {isSubmitting ? (
+                      <LoadingSpinner size="sm" label="Verifying & Recording..." />
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Confirm & Record Collection</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleClearScan}
+                    data-testid="clear-scan-btn"
+                    className="p-2.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-xl transition-colors border border-gray-200"
+                    title="Clear and scan another"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                </div>
               </form>
             </div>
-
-            <div className="text-[11px] text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
-              <span>Calls proposed POST /api/v1/agent/collections/scan-qr (Section 4)</span>
+          ) : (
+            <div className="bg-white rounded-2xl border border-dashed border-gray-300 p-8 text-center space-y-2">
+              <QrCode className="w-8 h-8 text-gray-300 mx-auto" />
+              <h3 className="text-xs font-bold text-gray-700">Awaiting Household QR Scan</h3>
+              <p className="text-[11px] text-gray-400 max-w-xs mx-auto">
+                Start the camera scanner or upload an image of a resident placard to decode and verify collection.
+              </p>
             </div>
-          </div>
-        ) : (
-          <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-xs flex items-center justify-center text-center">
-            <p className="text-xs text-gray-500">
-              Production mode: Scan simulation disabled. Use hardware camera feed.
-            </p>
-          </div>
-        )}
+          )}
+
+          {/* Demo Scan Simulation & Preset Panel (Strictly Hidden on Production Builds) */}
+          {IS_DEMO && ENABLE_DEMO_TOOLS && (
+            <div
+              data-testid="demo-scan-simulation-panel"
+              className="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs space-y-3"
+            >
+              <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+                <div className="flex items-center gap-2">
+                  <QrCode className="w-4 h-4 text-emerald-600" />
+                  <h3 className="text-xs font-bold text-gray-900">Scan Simulation (Demo Mode Only)</h3>
+                </div>
+                <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                  Hidden on Prod
+                </span>
+              </div>
+
+              {/* Fast Presets */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-bold text-gray-500 uppercase">Fast Presets:</span>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleDecodedQR('GPC-QR-CONS-C1D2E3F4A5B67890')}
+                    data-testid="simulate-scan-john-btn"
+                    className="px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg transition-colors"
+                  >
+                    John Doe (Ward 600001)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDecodedQR('GPC-QR-CONS-UNRELATED999')}
+                    className="px-2.5 py-1 text-[11px] font-semibold bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 rounded-lg transition-colors"
+                  >
+                    Unrelated Area (Ward 600099)
+                  </button>
+                </div>
+              </div>
+
+              {/* Manual Token Input */}
+              <div>
+                <label className="block text-[10px] font-bold text-gray-600 uppercase mb-1">
+                  Manual Opaque Token Input
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={qrPayload}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setQrPayload(val);
+                      if (val) setDecodedHousehold(resolveHouseholdDetails(val));
+                      else setDecodedHousehold(null);
+                    }}
+                    data-testid="scan-qr-input"
+                    className="flex-1 text-xs font-mono font-bold p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    placeholder="e.g. GPC-QR-CONS-..."
+                  />
+                </div>
+              </div>
+
+              <div className="text-[10px] text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
+                <ShieldCheck className="w-3 h-3 text-emerald-600 flex-shrink-0" />
+                <span>Calls proposed POST /api/v1/agent/collections/scan-qr (Section 4)</span>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

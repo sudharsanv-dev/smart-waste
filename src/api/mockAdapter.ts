@@ -865,11 +865,8 @@ export function setupMockAdapter(): MockAdapter | null {
 
     const state = getStoreState();
 
-    // Resolve target consumer / household from token
-    const targetConsumer =
-      state.accounts.find((a) => a.qr_payload === body.qr_payload) ||
-      (body.consumer_id ? state.accounts.find((a) => a.user_id === body.consumer_id) : undefined);
-
+    // Resolve target consumer and household strictly from the QR payload
+    const targetConsumer = state.accounts.find((a) => a.qr_payload === body.qr_payload);
     const targetHousehold =
       state.households.find((h) => h.qr_payload === body.qr_payload) ||
       (targetConsumer ? state.households.find((h) => h.mobile_number === targetConsumer.mobile_number) : undefined);
@@ -886,11 +883,25 @@ export function setupMockAdapter(): MockAdapter | null {
       ];
     }
 
+    // Validate identity: if consumer_id was provided, it must match the resolved household
+    const resolvedConsumerId = targetConsumer?.user_id || targetHousehold?.id;
+    if (body.consumer_id && resolvedConsumerId && body.consumer_id !== resolvedConsumerId && body.consumer_id !== targetHousehold?.id) {
+      return [
+        400,
+        {
+          success: false,
+          message: 'Supplied consumer ID does not match the household resolved from QR token',
+          statusCode: 400,
+          errors: { error_code: 'IDENTITY_MISMATCH' },
+        },
+      ];
+    }
+
     const targetArea = targetConsumer?.area_code || targetHousehold?.area_code || '';
     const assignedAreas = new Set([
       ...(account.assigned_area_codes || []),
       ...state.schedules.filter((s) => s.assigned_agent_id === account.user_id).map((s) => s.area_code),
-      account.area_code || '600001',
+      ...(account.area_code ? [account.area_code] : []),
     ]);
 
     if (!targetArea || !assignedAreas.has(targetArea)) {
@@ -1173,7 +1184,7 @@ export function setupMockAdapter(): MockAdapter | null {
       const assignedAreas = new Set([
         ...(account!.assigned_area_codes || []),
         ...state.schedules.filter((s) => s.assigned_agent_id === account!.user_id).map((s) => s.area_code),
-        account!.area_code || '600001',
+        ...(account!.area_code ? [account!.area_code] : []),
       ]);
       records = state.payments.filter((p) => assignedAreas.has(p.area_code));
     } else {
@@ -1202,7 +1213,7 @@ export function setupMockAdapter(): MockAdapter | null {
   });
 
   // 7. Manual Pickup Requests & Claims (Section 4 // TODO_BACKEND_SATHEESH)
-  mock.onGet('/api/v1/requests').reply((config) => {
+  mock.onGet('/api/v1/requests').reply(async (config) => {
     const { account, errorResponse } = resolveAccount(config);
     if (errorResponse) return errorResponse;
 
@@ -1210,17 +1221,34 @@ export function setupMockAdapter(): MockAdapter | null {
     const params = (config.params || {}) as Record<string, string | undefined>;
     let reqs: ManualPickupRequestItem[] = [];
 
+    // Support shared multi-context test fixture if exposed on window
+    const sharedGet = typeof window !== 'undefined'
+      ? (window as unknown as { __SHARED_GET_REQUESTS__?: () => Promise<ManualPickupRequestItem[]> | ManualPickupRequestItem[] }).__SHARED_GET_REQUESTS__
+      : undefined;
+
+    let sourceRequests = state.pickupRequests;
+    if (typeof sharedGet === 'function') {
+      try {
+        const shared = await sharedGet();
+        if (Array.isArray(shared)) {
+          sourceRequests = shared;
+        }
+      } catch {
+        // fallback to state
+      }
+    }
+
     if (account!.role === 'CONSUMER') {
-      reqs = state.pickupRequests.filter((r) => r.consumer_id === account!.user_id);
+      reqs = sourceRequests.filter((r) => r.consumer_id === account!.user_id);
     } else if (account!.role === 'AGENT') {
       const assignedAreas = new Set([
         ...(account!.assigned_area_codes || []),
         ...state.schedules.filter((s) => s.assigned_agent_id === account!.user_id).map((s) => s.area_code),
-        account!.area_code || '600001',
+        ...(account!.area_code ? [account!.area_code] : []),
       ]);
-      reqs = state.pickupRequests.filter((r) => assignedAreas.has(r.area_code));
+      reqs = sourceRequests.filter((r) => assignedAreas.has(r.area_code));
     } else {
-      reqs = state.pickupRequests;
+      reqs = sourceRequests;
     }
 
     if (params.status) {
@@ -1238,7 +1266,8 @@ export function setupMockAdapter(): MockAdapter | null {
     return [200, res];
   });
 
-  mock.onPost(/\/api\/v1\/requests\/[^/]+\/claim/).reply((config) => {
+  // Aligned claim path with PLAN.md Section 4: POST /api/v1/agent/requests/{id}/claim (supports legacy /api/v1/requests/{id}/claim too)
+  mock.onPost(/\/api\/v1\/(?:agent\/)?requests\/[^/]+\/claim/).reply(async (config) => {
     const { account, errorResponse } = resolveAccount(config);
     if (errorResponse) return errorResponse;
     if (account?.role !== 'AGENT') {
@@ -1256,6 +1285,33 @@ export function setupMockAdapter(): MockAdapter | null {
     const parts = config.url?.split('/') || [];
     const claimIdx = parts.indexOf('claim');
     const requestId = claimIdx > 0 ? parts[claimIdx - 1] : parts[parts.length - 2];
+
+    // Delegate to shared multi-context test fixture if exposed
+    const sharedClaim = typeof window !== 'undefined'
+      ? (window as unknown as { __SHARED_CLAIM_FIXTURE__?: (id: string, agt: { user_id: string; name: string }) => Promise<{ status: number; data?: ManualPickupRequestItem; message?: string; errors?: unknown }> }).__SHARED_CLAIM_FIXTURE__
+      : undefined;
+
+    if (typeof sharedClaim === 'function') {
+      const fixRes = await sharedClaim(requestId, { user_id: account.user_id, name: account.name });
+      if (fixRes.status === 200 && fixRes.data) {
+        setStoreState((prev) => ({
+          ...prev,
+          pickupRequests: prev.pickupRequests.map((r) => (r.id === requestId ? fixRes.data! : r)),
+        }));
+        return [200, fixRes.data];
+      } else {
+        return [
+          fixRes.status,
+          {
+            success: false,
+            message: fixRes.message,
+            statusCode: fixRes.status,
+            data: null,
+            errors: fixRes.errors || { error_code: 'CONFLICT' },
+          },
+        ];
+      }
+    }
 
     const state = getStoreState();
     const target = state.pickupRequests.find((r) => r.id === requestId);

@@ -111,11 +111,11 @@ export const backendGapService = {
   },
 
   // 7. Manual Requests // TODO_BACKEND_SATHEESH
-  async getPickupRequests(): Promise<GapServiceResponse<ManualPickupRequestsResponse>> {
+  async getPickupRequests(params?: { status?: string }): Promise<GapServiceResponse<ManualPickupRequestsResponse>> {
     if (!IS_DEMO || !USE_MOCK_API) {
       return getUnavailableResult('GET /api/v1/requests');
     }
-    const response = await axiosClient.get<ManualPickupRequestsResponse>('/api/v1/requests');
+    const response = await axiosClient.get<ManualPickupRequestsResponse>('/api/v1/requests', { params });
     return response.data;
   },
 
@@ -129,9 +129,9 @@ export const backendGapService = {
 
   async claimPickupRequest(requestId: string): Promise<GapServiceResponse<ManualPickupRequestItem>> {
     if (!IS_DEMO || !USE_MOCK_API) {
-      return getUnavailableResult(`POST /api/v1/requests/${requestId}/claim`);
+      return getUnavailableResult(`POST /api/v1/agent/requests/${requestId}/claim`);
     }
-    const response = await axiosClient.post<ManualPickupRequestItem>(`/api/v1/requests/${requestId}/claim`);
+    const response = await axiosClient.post<ManualPickupRequestItem>(`/api/v1/agent/requests/${requestId}/claim`);
     return response.data;
   },
 

@@ -1,10 +1,10 @@
 // src/api/agentService.ts
 // Phase 3 Field Collection Agent Service
-// Connects Agent screens to locked Section 3 and confirmed Section 4 endpoints
+// Connects Agent screens to locked Section 3 contracts and provisional Section 4 backendGapService
 
-import { axiosClient } from './axiosClient';
 import { scheduleService } from './scheduleService';
 import { notificationService } from './notificationService';
+import { backendGapService, isBackendUnavailable } from './backendGapService';
 import {
   AgentSchedulesResponse,
   AgentNotificationSendRequest,
@@ -39,19 +39,28 @@ export const agentService = {
 
   // 3. QR Scan Verification & Duplicate Prevention (Section 4 // TODO_BACKEND_SATHEESH)
   async scanCollectionQR(body: AgentScanQRRequest): Promise<AgentScanQRResponse> {
-    const res = await axiosClient.post<AgentScanQRResponse>('/api/v1/agent/collections/scan-qr', body);
-    return res.data;
+    const res = await backendGapService.scanCollectionQR(body);
+    if (isBackendUnavailable(res)) {
+      throw new Error(res.message);
+    }
+    return res;
   },
 
   // 4. Eligible Pickup Requests & Atomic Claiming (Section 4 // TODO_BACKEND_SATHEESH)
   async getPickupRequests(params?: { status?: string }): Promise<ManualPickupRequestsResponse> {
-    const res = await axiosClient.get<ManualPickupRequestsResponse>('/api/v1/requests', { params });
-    return res.data;
+    const res = await backendGapService.getPickupRequests(params);
+    if (isBackendUnavailable(res)) {
+      throw new Error(res.message);
+    }
+    return res;
   },
 
   async claimPickupRequest(requestId: string): Promise<ManualPickupRequestItem> {
-    const res = await axiosClient.post<ManualPickupRequestItem>(`/api/v1/requests/${requestId}/claim`);
-    return res.data;
+    const res = await backendGapService.claimPickupRequest(requestId);
+    if (isBackendUnavailable(res)) {
+      throw new Error(res.message);
+    }
+    return res;
   },
 
   // 5. Authorized Fee Ledger for Assigned Sector (Section 4 // TODO_BACKEND_SATHEESH)
@@ -60,18 +69,27 @@ export const agentService = {
     start_date?: string;
     end_date?: string;
   }): Promise<PaymentHistoryResponse> {
-    const res = await axiosClient.get<PaymentHistoryResponse>('/api/v1/payments/history', { params });
-    return res.data;
+    const res = await backendGapService.getPaymentHistory(params);
+    if (isBackendUnavailable(res)) {
+      throw new Error(res.message);
+    }
+    return res;
   },
 
   // 6. Operational Support Grievances (Section 4 // TODO_BACKEND_SATHEESH)
   async getSupportTickets(): Promise<SupportTicketsResponse> {
-    const res = await axiosClient.get<SupportTicketsResponse>('/api/v1/support/tickets');
-    return res.data;
+    const res = await backendGapService.getSupportTickets();
+    if (isBackendUnavailable(res)) {
+      throw new Error(res.message);
+    }
+    return res;
   },
 
   async createSupportTicket(body: CreateSupportTicketRequest): Promise<SupportTicketItem> {
-    const res = await axiosClient.post<SupportTicketItem>('/api/v1/support/tickets', body);
-    return res.data;
+    const res = await backendGapService.createSupportTicket(body);
+    if (isBackendUnavailable(res)) {
+      throw new Error(res.message);
+    }
+    return res;
   },
 };

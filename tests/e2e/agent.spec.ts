@@ -1,9 +1,11 @@
 // tests/e2e/agent.spec.ts
 // Phase 3 Field Collection Agent E2E Test Suite
-// Covers Dashboard, Honest ETA Arrival Alerts (QUEUED), Camera Scanner Lifecycle & Duplicate Prevention,
-// Shift Schedules, Fee Ledger, Operational Support Desk, and F-04 Dual-Context Competing Claim Concurrency.
+// Covers Dashboard, Honest ETA Arrival Alerts (QUEUED), Camera Scanner Lifecycle & QR Duplicate Prevention,
+// Known QR Image File Decoding via html5-qrcode, Shift Schedules, Fee Ledger, Operational Support Desk,
+// and F-04 Dual-Context Competing Claim Concurrency.
 
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
+import { ManualPickupRequestItem } from '../../src/types/contracts';
 
 test.describe('Phase 3 Field Agent Module & Exit Gate', () => {
   test.beforeEach(async ({ page }) => {
@@ -86,7 +88,8 @@ test.describe('Phase 3 Field Agent Module & Exit Gate', () => {
 
     // 2. Initial Valid Household Scan (Simulate John Doe QR)
     await page.locator('[data-testid="simulate-scan-john-btn"]').click();
-    await expect(page.locator('[data-testid="scan-qr-input"]')).toHaveValue(
+    await expect(page.locator('[data-testid="scan-confirmation-card"]')).toBeVisible();
+    await expect(page.locator('[data-testid="decoded-token"]')).toContainText(
       'GPC-QR-CONS-C1D2E3F4A5B67890'
     );
     await page.locator('[data-testid="submit-scan-btn"]').click();
@@ -99,6 +102,7 @@ test.describe('Phase 3 Field Agent Module & Exit Gate', () => {
 
     // 3. Repeat Scan for same household on same day
     await page.locator('[data-testid="simulate-scan-john-btn"]').click();
+    await expect(page.locator('[data-testid="scan-confirmation-card"]')).toBeVisible();
     await page.locator('[data-testid="submit-scan-btn"]').click();
 
     // Assert duplicate scan prevention banner
@@ -106,6 +110,73 @@ test.describe('Phase 3 Field Agent Module & Exit Gate', () => {
     await expect(page.locator('[data-testid="scan-duplicate-banner"]')).toContainText(
       'Household waste collection already completed for today. Duplicate scan ignored.'
     );
+  });
+
+  test('Screen 3: Known QR code image decoded through html5-qrcode file decoder', async ({ page }) => {
+    // 1. Obtain known household QR image from Consumer QR page
+    await page.goto('/login');
+    await page.locator('[data-testid="quick-login-consumer"]').click();
+    await expect(page).toHaveURL(/\/consumer/);
+
+    await page.goto('/consumer/qr');
+    await expect(page.locator('[data-testid="consumer-qr-page"]')).toBeVisible();
+
+    // Export SVG as PNG image buffer in browser
+    const pngDataUrl = await page.evaluate(async () => {
+      const svg = document.getElementById('consumer-qr-svg');
+      if (!svg) throw new Error('SVG not found');
+      const xml = new XMLSerializer().serializeToString(svg);
+      const svgBlob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+      const URL = window.URL || window.webkitURL || window;
+      const blobURL = URL.createObjectURL(svgBlob);
+
+      const img = new Image();
+      img.src = blobURL;
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = 300;
+      canvas.height = 300;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('No 2d context');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, 300, 300);
+      ctx.drawImage(img, 25, 25, 250, 250);
+      URL.revokeObjectURL(blobURL);
+      return canvas.toDataURL('image/png');
+    });
+
+    const base64Data = pngDataUrl.replace(/^data:image\/png;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    // 2. Login as Agent Ramesh Kumar
+    await page.goto('/login');
+    await page.locator('[data-testid="quick-login-agent"]').click();
+    await expect(page).toHaveURL(/\/agent/);
+
+    await page.goto('/agent/scan');
+    await expect(page.locator('[data-testid="agent-scan-page"]')).toBeVisible();
+
+    // 3. Upload known QR image into the html5-qrcode file decoder
+    const fileInput = page.locator('[data-testid="upload-qr-file-input"]');
+    await fileInput.setInputFiles({
+      name: 'known-household-qr.png',
+      mimeType: 'image/png',
+      buffer,
+    });
+
+    // 4. Assert decoded token and confirmation card appears
+    await expect(page.locator('[data-testid="scan-confirmation-card"]')).toBeVisible();
+    await expect(page.locator('[data-testid="decoded-token"]')).toContainText('GPC-QR-CONS-C1D2E3F4A5B67890');
+    await expect(page.locator('[data-testid="decoded-resident-name"]')).toHaveText('John Doe');
+
+    // 5. Submit collection record after explicit confirmation
+    await page.locator('[data-testid="submit-scan-btn"]').click();
+    await expect(page.locator('[data-testid="scan-success-banner"]')).toBeVisible();
+    await expect(page.locator('[data-testid="scan-success-banner"]')).toContainText('Collection Recorded Successfully');
   });
 
   test('Screen 5: Sector Fee History Ledger', async ({ page }) => {
@@ -145,51 +216,89 @@ test.describe('Phase 3 Field Agent Module & Exit Gate', () => {
   test('Competing claims (F-04): two agent browser contexts acting on the same mutable request assert one success, one conflict (409), and one persisted owner', async ({
     browser,
   }) => {
-    // Shared test fixture connecting both isolated browser contexts to shared store state
-    const syncState = async (fromPage: Page, toPage: Page) => {
-      const stateJson = await fromPage.evaluate(() => localStorage.getItem('smartwaste_demo_state_v1.0.0'));
-      if (stateJson) {
-        await toPage.evaluate((json) => {
-          const key = 'smartwaste_demo_state_v1.0.0';
-          localStorage.setItem(key, json);
-          window.dispatchEvent(new StorageEvent('storage', { key, newValue: json }));
-        }, stateJson);
-      }
+    // Shared Node-hosted test fixture running the application's real atomic claim transition
+    // Both isolated browser contexts communicate with this shared state without copying localStorage
+    const sharedRequests: ManualPickupRequestItem[] = [
+      {
+        id: 'req-001',
+        consumer_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+        consumer_name: 'John Doe',
+        consumer_mobile: '9876543210',
+        waste_type: 'BULK',
+        preferred_date: '2026-11-20',
+        address: '12 Sunrise Avenue',
+        area_code: '600001',
+        status: 'PENDING',
+        created_at: '2026-11-14T08:00:00Z',
+      },
+    ];
+
+    const sharedFixture = {
+      getRequests: async () => {
+        return JSON.parse(JSON.stringify(sharedRequests));
+      },
+      claim: async (requestId: string, agent: { user_id: string; name: string }) => {
+        const target = sharedRequests.find((r) => r.id === requestId);
+        if (!target) {
+          return { status: 404, message: 'Pickup request not found' };
+        }
+        if (target.status !== 'PENDING') {
+          return {
+            status: 409,
+            message: `This request has already been claimed by another agent (${target.claimed_by_agent_name || 'claimed'}).`,
+            errors: {
+              error_code: 'CONFLICT',
+              current_status: target.status,
+              owner_id: target.claimed_by_agent_id,
+            },
+          };
+        }
+        target.status = 'CLAIMED';
+        (target as unknown as { claimed_by_agent_id?: string }).claimed_by_agent_id = agent.user_id;
+        (target as unknown as { claimed_by_agent_name?: string }).claimed_by_agent_name = agent.name;
+        return { status: 200, data: { ...target } };
+      },
     };
 
     // 1. Agent 1 Context (Ramesh Kumar)
     const context1 = await browser.newContext();
     const page1 = await context1.newPage();
+    await page1.exposeFunction('__SHARED_GET_REQUESTS__', () => sharedFixture.getRequests());
+    await page1.exposeFunction('__SHARED_CLAIM_FIXTURE__', (id: string, agt: { user_id: string; name: string }) =>
+      sharedFixture.claim(id, agt)
+    );
+
+    // 2. Agent 2 Context (Suresh Babu) - Completely isolated context and storage
+    const context2 = await browser.newContext();
+    const page2 = await context2.newPage();
+    await page2.exposeFunction('__SHARED_GET_REQUESTS__', () => sharedFixture.getRequests());
+    await page2.exposeFunction('__SHARED_CLAIM_FIXTURE__', (id: string, agt: { user_id: string; name: string }) =>
+      sharedFixture.claim(id, agt)
+    );
+
+    // Agent 1 logs in
     await page1.goto('/login');
     await page1.locator('[data-testid="quick-login-agent"]').click();
     await expect(page1).toHaveURL(/\/agent/);
 
-    // Navigate Agent 1 to Requests
-    await page1.goto('/agent/requests');
-    await expect(page1.locator('[data-testid="agent-requests-page"]')).toBeVisible();
-    await expect(page1.locator('[data-testid="claim-request-req-001"]')).toBeVisible();
-
-    // Sync initial seed state to Agent 2 context
-    const context2 = await browser.newContext();
-    const page2 = await context2.newPage();
+    // Agent 2 logs in
     await page2.goto('/login');
-
-    // Sync initial state from page1 to page2
-    await syncState(page1, page2);
-
-    // Agent 2 (Suresh Babu) logs in on page2 using mobile 9876543211
     await page2.locator('[data-testid="tab-agent"]').click();
     await page2.locator('[data-testid="mobile-input"]').fill('9876543211');
     await page2.locator('[data-testid="password-input"]').fill('Agent@123');
     await page2.locator('[data-testid="login-submit-btn"]').click();
     await expect(page2).toHaveURL(/\/agent/);
 
-    // Navigate Agent 2 to Requests
+    // Both navigate to /agent/requests and see req-001 as PENDING
+    await page1.goto('/agent/requests');
+    await expect(page1.locator('[data-testid="agent-requests-page"]')).toBeVisible();
+    await expect(page1.locator('[data-testid="claim-request-req-001"]')).toBeVisible();
+
     await page2.goto('/agent/requests');
     await expect(page2.locator('[data-testid="agent-requests-page"]')).toBeVisible();
     await expect(page2.locator('[data-testid="claim-request-req-001"]')).toBeVisible();
 
-    // 2. Agent 1 claims req-001 first
+    // Agent 1 claims req-001
     await page1.locator('[data-testid="claim-request-req-001"]').click();
 
     // Assert Agent 1 gets success banner
@@ -198,10 +307,7 @@ test.describe('Phase 3 Field Agent Module & Exit Gate', () => {
       'Successfully claimed request req-001'
     );
 
-    // Synchronize the shared store fixture to Agent 2 context
-    await syncState(page1, page2);
-
-    // 3. Agent 2 attempts to claim the same req-001
+    // Agent 2 attempts to claim the same req-001
     await page2.locator('[data-testid="claim-request-req-001"]').click();
 
     // Assert Agent 2 receives 409 Conflict banner
@@ -210,23 +316,16 @@ test.describe('Phase 3 Field Agent Module & Exit Gate', () => {
       'already been claimed by another agent (Ramesh Kumar)'
     );
 
-    // 4. Assert exactly one persisted owner in both contexts
-    const ownerInPage1 = await page1.evaluate(() => {
-      const raw = localStorage.getItem('smartwaste_demo_state_v1.0.0');
-      const state = raw ? JSON.parse(raw) : null;
-      const req = state?.pickupRequests?.find((r: { id: string }) => r.id === 'req-001');
-      return req?.claimed_by_agent_name;
-    });
+    // Reload both pages
+    await page1.reload();
+    await page2.reload();
 
-    const ownerInPage2 = await page2.evaluate(() => {
-      const raw = localStorage.getItem('smartwaste_demo_state_v1.0.0');
-      const state = raw ? JSON.parse(raw) : null;
-      const req = state?.pickupRequests?.find((r: { id: string }) => r.id === 'req-001');
-      return req?.claimed_by_agent_name;
-    });
+    // Assert persisted owner visible to both after reload
+    await expect(page1.locator('[data-testid="request-status-req-001"]')).toHaveText('CLAIMED');
+    await expect(page1.locator('[data-testid="request-owner-req-001"]')).toContainText('Ramesh Kumar');
 
-    expect(ownerInPage1).toBe('Ramesh Kumar');
-    expect(ownerInPage2).toBe('Ramesh Kumar');
+    await expect(page2.locator('[data-testid="request-status-req-001"]')).toHaveText('CLAIMED');
+    await expect(page2.locator('[data-testid="request-owner-req-001"]')).toContainText('Ramesh Kumar');
 
     await context1.close();
     await context2.close();

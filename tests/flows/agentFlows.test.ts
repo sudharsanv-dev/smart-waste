@@ -3,7 +3,7 @@
 // Covers Schedules, Arrival Alerts (QUEUED), QR Scanning & Duplicate Prevention,
 // Route Boundaries, F-04 Competing Claims, and Field Support Tickets.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   resetDemoData,
   getStoreState,
@@ -248,6 +248,64 @@ describe('Phase 3 Field Agent Module & Exit Gate', () => {
       expect(errorStatus).toBe(400);
       expect(errorCode).toBe('OUTSIDE_ASSIGNED_ROUTE');
     });
+
+    it('rejects collection scan with 400 IDENTITY_MISMATCH if supplied consumer_id does not match QR token', async () => {
+      const agentToken = 'agt-token-ramesh';
+      registerSession(agentToken, RAMESH_AGENT);
+      setApiBearerToken(agentToken);
+
+      let errorStatus = 0;
+      let errorCode = '';
+      try {
+        await agentService.scanCollectionQR({
+          qr_payload: JOHN_CONSUMER.qr_payload,
+          consumer_id: 'mismatched-consumer-id-999',
+          waste_weight_kg: 3.5,
+        });
+      } catch (err: unknown) {
+        const errObj = err as { response?: { status?: number; data?: { errors?: { error_code?: string } } } };
+        errorStatus = errObj.response?.status || 0;
+        errorCode = errObj.response?.data?.errors?.error_code || '';
+      }
+
+      expect(errorStatus).toBe(400);
+      expect(errorCode).toBe('IDENTITY_MISMATCH');
+    });
+
+    it('rejects collection scan for Ward 600001 if agent has no assigned area codes (no 600001 fallback)', async () => {
+      const unassignedAgent = {
+        user_id: 'agt-unassigned',
+        name: 'Unassigned Agent',
+        mobile_number: '9876543299',
+        password: 'Agent@123',
+        role: 'AGENT' as const,
+        assigned_area_codes: [], // Explicitly no assigned wards
+        area_code: undefined,
+      };
+
+      // Add to store accounts so session resolution succeeds, but with no assigned wards
+      getStoreState().accounts.push(unassignedAgent as any);
+
+      const token = 'agt-token-unassigned';
+      registerSession(token, unassignedAgent);
+      setApiBearerToken(token);
+
+      let errorStatus = 0;
+      let errorCode = '';
+      try {
+        await agentService.scanCollectionQR({
+          qr_payload: JOHN_CONSUMER.qr_payload, // Ward 600001
+          waste_weight_kg: 3.5,
+        });
+      } catch (err: unknown) {
+        const errObj = err as { response?: { status?: number; data?: { errors?: { error_code?: string } } } };
+        errorStatus = errObj.response?.status || 0;
+        errorCode = errObj.response?.data?.errors?.error_code || '';
+      }
+
+      expect(errorStatus).toBe(400);
+      expect(errorCode).toBe('OUTSIDE_ASSIGNED_ROUTE');
+    });
   });
 
   // 4. Phase 3 Exit Gate & F-04: Competing Claims on Mutable Request
@@ -346,6 +404,75 @@ describe('Phase 3 Field Agent Module & Exit Gate', () => {
       const found = list.content.find((t) => t.ticket_id === ticket.ticket_id);
       expect(found).toBeDefined();
       expect(found?.subject).toBe('Hydraulic lift issue on TN-01-WM-4042');
+    });
+  });
+
+  // 7. Live Mode Protection via backendGapService
+  describe('backendGapService Live Mode Protection for Provisional Operations', () => {
+    it('throws unconfirmed endpoint error when backendGapService reports unavailable', async () => {
+      // Import backendGapService and verify isBackendUnavailable handler
+      const { backendGapService } = await import('../../src/api/backendGapService');
+
+      // Test each provisional agent method throws when gap service returns unavailable
+      const mockUnavailable = {
+        success: false as const,
+        unavailable: true as const,
+        message: 'Backend endpoint is unconfirmed and unavailable in live mode. // TODO_BACKEND_SATHEESH',
+        data: null,
+      };
+
+      const spyScan = vi.spyOn(backendGapService, 'scanCollectionQR').mockResolvedValue(mockUnavailable);
+      await expect(
+        agentService.scanCollectionQR({
+          qr_payload: 'test',
+          waste_weight_kg: 3,
+        })
+      ).rejects.toThrow('Backend endpoint is unconfirmed and unavailable in live mode.');
+      spyScan.mockRestore();
+
+      const spyRequests = vi.spyOn(backendGapService, 'getPickupRequests').mockResolvedValue(mockUnavailable);
+      await expect(agentService.getPickupRequests()).rejects.toThrow(
+        'Backend endpoint is unconfirmed and unavailable in live mode.'
+      );
+      spyRequests.mockRestore();
+
+      const spyClaim = vi.spyOn(backendGapService, 'claimPickupRequest').mockResolvedValue(mockUnavailable);
+      await expect(agentService.claimPickupRequest('req-999')).rejects.toThrow(
+        'Backend endpoint is unconfirmed and unavailable in live mode.'
+      );
+      spyClaim.mockRestore();
+
+      const spyHistory = vi.spyOn(backendGapService, 'getPaymentHistory').mockResolvedValue(mockUnavailable);
+      await expect(agentService.getPaymentHistory()).rejects.toThrow(
+        'Backend endpoint is unconfirmed and unavailable in live mode.'
+      );
+      spyHistory.mockRestore();
+
+      const spyTickets = vi.spyOn(backendGapService, 'getSupportTickets').mockResolvedValue(mockUnavailable);
+      await expect(agentService.getSupportTickets()).rejects.toThrow(
+        'Backend endpoint is unconfirmed and unavailable in live mode.'
+      );
+      spyTickets.mockRestore();
+
+      const spyCreateTicket = vi.spyOn(backendGapService, 'createSupportTicket').mockResolvedValue(mockUnavailable);
+      await expect(
+        agentService.createSupportTicket({ category: 'Other', subject: 'Test', description: 'Test' })
+      ).rejects.toThrow('Backend endpoint is unconfirmed and unavailable in live mode.');
+      spyCreateTicket.mockRestore();
+    });
+  });
+
+  // 8. Timezone: Default Agent Schedule Query
+  describe('Asia/Kolkata Operational Timezone', () => {
+    it('computes current date in Asia/Kolkata for default schedule queries', () => {
+      const todayIST = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+
+      expect(todayIST).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
   });
 });

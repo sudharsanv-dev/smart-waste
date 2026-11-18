@@ -185,6 +185,8 @@ export interface UserSession {
   expires_in: number;
   area_code?: string;
   qr_payload?: string;
+  assigned_area_codes?: string[];
+  vehicle_id?: string;
 }
 
 export interface DemoSession {
@@ -198,6 +200,8 @@ export interface DemoSession {
   expires_at: number;
   area_code?: string;
   qr_payload?: string;
+  assigned_area_codes?: string[];
+  vehicle_id?: string;
 }
 
 export interface NotificationsInboxResponse {
