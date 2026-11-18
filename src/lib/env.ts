@@ -1,28 +1,44 @@
 // src/lib/env.ts
 // Environment guard and runtime validation ensuring no demo flags or placeholder URLs leak into production
+// Uses the selected Vite mode (not import.meta.env.PROD, which is true for all optimized builds including build:demo)
 
-const isProd = import.meta.env.PROD || import.meta.env.MODE === 'production';
+const mode = import.meta.env.MODE;
+const appMode = import.meta.env.VITE_APP_MODE;
+
+export const IS_DEMO: boolean = mode === 'demo' || appMode === 'demo' || mode === 'development' || mode === 'test';
+export const IS_PRODUCTION: boolean = (mode === 'production' || appMode === 'production') && !IS_DEMO;
 
 const rawUseMock = import.meta.env.VITE_USE_MOCK_API;
 const rawEnableDemoTools = import.meta.env.VITE_ENABLE_DEMO_TOOLS;
 const rawApiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
 const rawTimezone = import.meta.env.VITE_OPERATIONAL_TIMEZONE || 'Asia/Kolkata';
 
-export const USE_MOCK_API: boolean = rawUseMock === 'true' || rawUseMock === true;
-export const ENABLE_DEMO_TOOLS: boolean = rawEnableDemoTools === 'true' || rawEnableDemoTools === true;
+export const USE_MOCK_API: boolean = rawUseMock === 'true' || rawUseMock === true || (IS_DEMO && rawUseMock !== 'false');
+export const ENABLE_DEMO_TOOLS: boolean = rawEnableDemoTools === 'true' || rawEnableDemoTools === true || (IS_DEMO && rawEnableDemoTools !== 'false');
 export const API_BASE_URL: string = String(rawApiBaseUrl);
 export const OPERATIONAL_TIMEZONE: string = String(rawTimezone);
-export const APP_MODE: 'demo' | 'production' = (import.meta.env.VITE_APP_MODE as 'demo' | 'production') || (isProd ? 'production' : 'demo');
+export const APP_MODE: 'demo' | 'production' = IS_PRODUCTION ? 'production' : 'demo';
 
-// Fail-fast guard in production
-if (isProd) {
+// Fail-fast guard in live production mode
+if (IS_PRODUCTION) {
   if (USE_MOCK_API) {
-    throw new Error('[SECURITY FATAL] VITE_USE_MOCK_API must NOT be enabled in production mode.');
+    throw new Error('[SECURITY FATAL] VITE_USE_MOCK_API must NOT be enabled in live production mode.');
   }
   if (ENABLE_DEMO_TOOLS) {
-    throw new Error('[SECURITY FATAL] VITE_ENABLE_DEMO_TOOLS must NOT be enabled in production mode.');
+    throw new Error('[SECURITY FATAL] VITE_ENABLE_DEMO_TOOLS must NOT be enabled in live production mode.');
   }
-  if (!API_BASE_URL || API_BASE_URL.includes('example.invalid')) {
-    throw new Error(`[CONFIG FATAL] VITE_API_BASE_URL cannot be empty or placeholder in production mode. Received: "${API_BASE_URL}"`);
+  if (!API_BASE_URL || API_BASE_URL.trim() === '' || API_BASE_URL.includes('example.invalid')) {
+    throw new Error(`[CONFIG FATAL] VITE_API_BASE_URL cannot be empty or placeholder in live production mode. Received: "${API_BASE_URL}"`);
+  }
+  try {
+    const parsed = new URL(API_BASE_URL);
+    if (parsed.protocol !== 'https:') {
+      throw new Error(`[CONFIG FATAL] VITE_API_BASE_URL must use HTTPS in live production mode. Received: "${API_BASE_URL}"`);
+    }
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message.includes('[CONFIG FATAL]')) {
+      throw err;
+    }
+    throw new Error(`[CONFIG FATAL] VITE_API_BASE_URL is malformed: "${API_BASE_URL}"`);
   }
 }

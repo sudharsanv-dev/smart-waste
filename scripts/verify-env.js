@@ -1,59 +1,67 @@
 // scripts/verify-env.js
 // Production build safeguard enforcing Rule 5 and Scenario M-03 from PLAN.md
+// Uses Vite's loadEnv to evaluate the exact effective environment (including .env, .env.local, .env.[mode], .env.[mode].local and process.env)
 
-import fs from 'node:fs';
-import path from 'node:path';
+import { loadEnv } from 'vite';
 
-const _isProduction = process.env.NODE_ENV === 'production' || process.argv.includes('--mode') && process.argv.includes('production');
+const mode = process.argv.includes('--mode') 
+  ? process.argv[process.argv.indexOf('--mode') + 1] 
+  : (process.env.MODE || process.env.NODE_ENV || 'production');
 
-// Also load .env.production if it exists
-let envContent = '';
-const prodEnvPath = path.resolve(process.cwd(), '.env.production');
-if (fs.existsSync(prodEnvPath)) {
-  envContent = fs.readFileSync(prodEnvPath, 'utf8');
-}
+const isProduction = mode === 'production';
 
-function parseEnv(content) {
-  const env = {};
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx !== -1) {
-      const key = trimmed.slice(0, eqIdx).trim();
-      const val = trimmed.slice(eqIdx + 1).trim();
-      env[key] = val;
+// Load effective Vite environment variables for the specified mode
+const loadedEnv = loadEnv(mode, process.cwd(), '');
+const effectiveEnv = { ...loadedEnv, ...process.env };
+
+const useMockApi = effectiveEnv.VITE_USE_MOCK_API;
+const enableDemoTools = effectiveEnv.VITE_ENABLE_DEMO_TOOLS;
+const apiBaseUrl = (effectiveEnv.VITE_API_BASE_URL || '').trim();
+
+console.log(`[verify-env] Auditing effective environment for mode: "${mode}"...`);
+
+if (isProduction) {
+  const errors = [];
+
+  if (useMockApi === 'true' || useMockApi === true) {
+    errors.push('CRITICAL: VITE_USE_MOCK_API cannot be true in production build!');
+  }
+
+  if (enableDemoTools === 'true' || enableDemoTools === true) {
+    errors.push('CRITICAL: VITE_ENABLE_DEMO_TOOLS cannot be true in production build!');
+  }
+
+  if (!apiBaseUrl) {
+    errors.push('CRITICAL: VITE_API_BASE_URL is missing or empty in production mode.');
+  } else if (
+    apiBaseUrl.includes('example.invalid') || 
+    apiBaseUrl.includes('example.test') || 
+    apiBaseUrl.includes('example.com') ||
+    /\bexample\b/i.test(apiBaseUrl)
+  ) {
+    errors.push(`CRITICAL: VITE_API_BASE_URL cannot use placeholder or example test domains in production. Received: "${apiBaseUrl}"`);
+  } else {
+    try {
+      const parsedUrl = new URL(apiBaseUrl);
+      if (parsedUrl.protocol !== 'https:') {
+        errors.push(`CRITICAL: VITE_API_BASE_URL must use an absolute HTTPS URL (got protocol "${parsedUrl.protocol}" in "${apiBaseUrl}").`);
+      }
+      if (!parsedUrl.hostname || parsedUrl.hostname.length === 0) {
+        errors.push(`CRITICAL: VITE_API_BASE_URL must have a valid hostname. Received: "${apiBaseUrl}"`);
+      }
+    } catch (err) {
+      errors.push(`CRITICAL: VITE_API_BASE_URL is malformed. Received: "${apiBaseUrl}". Error: ${err.message}`);
     }
   }
-  return env;
+
+  if (errors.length > 0) {
+    console.error('\n================ PRODUCTION BUILD GUARD FAILED ================');
+    errors.forEach(err => console.error(` ❌ ${err}`));
+    console.error('================================================================\n');
+    process.exit(1);
+  }
+
+  console.log('✅ [verify-env] Production build safety checks passed.');
+} else {
+  console.log(`ℹ️ [verify-env] Non-production mode "${mode}" - skipping production enforcement.`);
 }
-
-const fileEnv = parseEnv(envContent);
-const useMockApi = process.env.VITE_USE_MOCK_API ?? fileEnv.VITE_USE_MOCK_API;
-const enableDemoTools = process.env.VITE_ENABLE_DEMO_TOOLS ?? fileEnv.VITE_ENABLE_DEMO_TOOLS;
-const apiBaseUrl = process.env.VITE_API_BASE_URL ?? fileEnv.VITE_API_BASE_URL;
-
-console.log('[verify-env] Auditing environment configuration for production build...');
-
-const errors = [];
-
-if (useMockApi === 'true' || useMockApi === true) {
-  errors.push('CRITICAL: VITE_USE_MOCK_API cannot be true in production build!');
-}
-
-if (enableDemoTools === 'true' || enableDemoTools === true) {
-  errors.push('CRITICAL: VITE_ENABLE_DEMO_TOOLS cannot be true in production build!');
-}
-
-if (!apiBaseUrl || apiBaseUrl.trim() === '' || apiBaseUrl.includes('example.invalid')) {
-  errors.push(`CRITICAL: VITE_API_BASE_URL must be a real verified HTTPS endpoint, got: "${apiBaseUrl}"`);
-}
-
-if (errors.length > 0) {
-  console.error('\n================ PRODUCTION BUILD GUARD FAILED ================');
-  errors.forEach(err => console.error(` ❌ ${err}`));
-  console.error('================================================================\n');
-  process.exit(1);
-}
-
-console.log('✅ [verify-env] Production build safety checks passed.');
