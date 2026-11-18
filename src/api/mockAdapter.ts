@@ -975,8 +975,15 @@ export function setupMockAdapter(): MockAdapter | null {
 
     const now = new Date().toISOString();
 
-    // 3. Repeating a successful confirmation must return the same receipt
-    if (targetInvoice.status === 'PAID' || registeredOrder.status === 'PAID') {
+    // 3. The invoice ledger is authoritative for simulated payment success
+    // A retry must never return a paid receipt while the bound invoice is still unpaid.
+    if (targetInvoice.status === 'PAID') {
+      if (registeredOrder.status !== 'PAID') {
+        updatePaymentOrder(registeredOrder.order_id, {
+          status: 'PAID',
+          paid_at: targetInvoice.paid_at || now,
+        });
+      }
       const res: VerifyPaymentResponse = {
         invoice_id: targetInvoice.invoice_id,
         status: 'PAID',

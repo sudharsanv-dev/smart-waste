@@ -12,7 +12,7 @@ import { Calendar, Clock, MapPin, Filter, Info, ShieldAlert, ChevronLeft, Chevro
 
 export const ConsumerSchedulePage: React.FC = () => {
   const { user } = useAuth();
-  const [schedules, setSchedules] = useState<ConsumerScheduleItem[]>([]);
+  const [allSchedules, setAllSchedules] = useState<ConsumerScheduleItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -21,8 +21,6 @@ export const ConsumerSchedulePage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [page, setPage] = useState(0);
   const [pageSize] = useState(5);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalElements, setTotalElements] = useState(0);
 
   // Authenticated profile data strictly without fallback
   const areaCode = user?.area_code;
@@ -37,23 +35,32 @@ export const ConsumerSchedulePage: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const res = await consumerService.getSchedules({
-        area_code: areaCode,
-        start_date: dateFilter || undefined,
-        page,
-        size: pageSize,
-      });
+      // Retrieve schedules through locked Section 3 contract (page, size, area_code, start_date)
+      // Accumulates pages to maintain exact synchronization across client status filtering and pagination
+      let collected: ConsumerScheduleItem[] = [];
+      let currentPage = 0;
+      let isLast = false;
 
-      setSchedules(res.content || []);
-      setTotalPages(res.total_pages || 1);
-      setTotalElements(res.total_elements || 0);
+      while (!isLast && currentPage < 20) {
+        const res = await consumerService.getSchedules({
+          area_code: areaCode,
+          start_date: dateFilter || undefined,
+          page: currentPage,
+          size: 20,
+        });
+        collected = [...collected, ...(res.content || [])];
+        isLast = Boolean(res.last) || currentPage + 1 >= (res.total_pages || 1);
+        currentPage++;
+      }
+
+      setAllSchedules(collected);
     } catch (err) {
       console.error('Failed to load consumer schedules:', err);
       setError('Unable to load neighborhood schedules. Please try again.');
     } finally {
       setIsLoading(false);
     }
-  }, [areaCode, dateFilter, page, pageSize]);
+  }, [areaCode, dateFilter]);
 
   useEffect(() => {
     fetchSchedules();
@@ -76,10 +83,15 @@ export const ConsumerSchedulePage: React.FC = () => {
     setPage(0);
   };
 
-  // Client-side status filter applied if status is selected
-  const displayedSchedules = statusFilter === 'ALL'
-    ? schedules
-    : schedules.filter((s) => s.status === statusFilter);
+  // Status filtering applied across all retrieved schedules
+  const filteredSchedules = statusFilter === 'ALL'
+    ? allSchedules
+    : allSchedules.filter((s) => s.status === statusFilter);
+
+  const totalFilteredElements = filteredSchedules.length;
+  const totalFilteredPages = Math.max(1, Math.ceil(totalFilteredElements / pageSize));
+  const validPage = Math.min(page, Math.max(0, totalFilteredPages - 1));
+  const displayedSchedules = filteredSchedules.slice(validPage * pageSize, (validPage + 1) * pageSize);
 
   // Unavailable Ward State
   if (!isWardAvailable) {
@@ -258,13 +270,13 @@ export const ConsumerSchedulePage: React.FC = () => {
           data-testid="schedule-pagination"
         >
           <span className="text-gray-500" data-testid="page-indicator">
-            Page {page + 1} of {Math.max(1, totalPages)} ({totalElements} total entries)
+            Page {validPage + 1} of {Math.max(1, totalFilteredPages)} ({totalFilteredElements} matching {totalFilteredElements === 1 ? 'shift' : 'shifts'})
           </span>
 
           <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={page === 0 || isLoading}
+              disabled={validPage === 0 || isLoading}
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               data-testid="prev-page-btn"
               className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -274,7 +286,7 @@ export const ConsumerSchedulePage: React.FC = () => {
             </button>
             <button
               type="button"
-              disabled={page >= totalPages - 1 || isLoading}
+              disabled={validPage >= totalFilteredPages - 1 || isLoading}
               onClick={() => setPage((p) => p + 1)}
               data-testid="next-page-btn"
               className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"

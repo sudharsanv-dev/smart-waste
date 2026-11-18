@@ -9,10 +9,12 @@ import {
   setStoreState,
   registerDemoSession,
   getDemoSession,
+  registerPaymentOrder,
 } from '../../src/api/mockStore';
 import { setApiBearerToken } from '../../src/api/axiosClient';
 import { consumerService } from '../../src/api/consumerService';
 import { backendGapService } from '../../src/api/backendGapService';
+import { ConsumerScheduleItem } from '../../src/types/contracts';
 import '../../src/api/mockAdapter'; // Ensure mock adapter is registered
 
 describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
@@ -334,6 +336,95 @@ describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
       expect(dashboard.recent_pickups[0].agent_name).toBe('Ramesh Kumar');
       expect(dashboard.recent_pickups[0].waste_weight_kg).toBe(3.2);
     });
+
+    it('filters consumer timetable by status across pages where the only matching pickup starts on page two of raw timetable', async () => {
+      const johnToken = 'token-john-page2-filter-' + Date.now();
+      registerDemoSession({
+        user_id: 'c1d2e3f4-a5b6-7890-1234-56789abcdef0',
+        role: 'CONSUMER',
+        token: johnToken,
+        expires_at: Date.now() + 3600000,
+      });
+      setApiBearerToken(johnToken, 3600);
+
+      // Configure schedules for Ward 600001:
+      // Page 0 (size 2): 2 ASSIGNED schedules
+      // Page 1 (size 2): 1 COMPLETED schedule (starts on page two of raw query)
+      const customSchedules = [
+        {
+          id: 'sched-raw-p1-01',
+          area_code: '600001',
+          assigned_agent_id: 'b2c3d4e5-f6a7-8901-2345-67890abcdef1',
+          scheduled_date: '2026-11-20',
+          start_time: '07:00:00',
+          end_time: '09:00:00',
+          status: 'ASSIGNED' as const,
+        },
+        {
+          id: 'sched-raw-p1-02',
+          area_code: '600001',
+          assigned_agent_id: 'b2c3d4e5-f6a7-8901-2345-67890abcdef1',
+          scheduled_date: '2026-11-21',
+          start_time: '07:00:00',
+          end_time: '09:00:00',
+          status: 'ASSIGNED' as const,
+        },
+        {
+          id: 'sched-raw-p2-01',
+          area_code: '600001',
+          assigned_agent_id: 'b2c3d4e5-f6a7-8901-2345-67890abcdef1',
+          scheduled_date: '2026-11-22',
+          start_time: '07:00:00',
+          end_time: '09:00:00',
+          status: 'COMPLETED' as const, // Only COMPLETED schedule, starts on page two
+        },
+      ];
+
+      setStoreState((prev) => ({
+        ...prev,
+        schedules: customSchedules,
+      }));
+
+      // 1. Verify raw API behavior with pageSize=2 keeps locked Section 3 contract
+      const rawPage0 = await consumerService.getSchedules({ area_code: '600001', page: 0, size: 2 });
+      expect(rawPage0.content).toHaveLength(2);
+      expect(rawPage0.content.every((s) => s.status === 'ASSIGNED')).toBe(true);
+
+      const rawPage1 = await consumerService.getSchedules({ area_code: '600001', page: 1, size: 2 });
+      expect(rawPage1.content).toHaveLength(1);
+      expect(rawPage1.content[0].id).toBe('sched-raw-p2-01');
+      expect(rawPage1.content[0].status).toBe('COMPLETED');
+
+      // 2. Fetch all pages through locked contract to simulate consumer timetable status filtering across pages
+      let allItems: ConsumerScheduleItem[] = [];
+      let curPage = 0;
+      let isLast = false;
+      while (!isLast && curPage < 10) {
+        const res = await consumerService.getSchedules({ area_code: '600001', page: curPage, size: 2 });
+        allItems = [...allItems, ...res.content];
+        isLast = Boolean(res.last) || curPage + 1 >= res.total_pages;
+        curPage++;
+      }
+      expect(allItems).toHaveLength(3);
+
+      // Filter by COMPLETED:
+      const completedFiltered = allItems.filter((s) => s.status === 'COMPLETED');
+      expect(completedFiltered).toHaveLength(1);
+      expect(completedFiltered[0].id).toBe('sched-raw-p2-01');
+
+      // The count (1), displayed rows (1), total pages (1), and empty state (false) describe the same filtered result
+      const pageSize = 2;
+      const totalElements = completedFiltered.length;
+      const totalPages = Math.max(1, Math.ceil(totalElements / pageSize));
+      const pageIndex = 0;
+      const displayed = completedFiltered.slice(pageIndex * pageSize, (pageIndex + 1) * pageSize);
+
+      expect(displayed).toHaveLength(1);
+      expect(displayed[0].status).toBe('COMPLETED');
+      expect(totalElements).toBe(1);
+      expect(totalPages).toBe(1);
+      expect(displayed.length === 0).toBe(false); // empty state is false
+    });
   });
 
   // 3. Payment Exit Gate: Double-Click Idempotency
@@ -548,6 +639,85 @@ describe('Phase 2 Consumer Module & Payment Exit Gate', () => {
       const stateFinal = getStoreState();
       const adminTotalFinal = stateFinal.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0);
       expect(adminTotalFinal).toBe(550);
+    });
+
+    it('authoritative ledger: starts with paid order and unpaid invoice, retries confirmation, and ensures receipt, balance, and admin total agree exactly once', async () => {
+      const johnUserId = 'c1d2e3f4-a5b6-7890-1234-56789abcdef0';
+      const token = 'test-token-john-ledger-auth-' + Date.now();
+      registerDemoSession({
+        user_id: johnUserId,
+        role: 'CONSUMER',
+        token,
+        expires_at: Date.now() + 3600000,
+      });
+      setApiBearerToken(token, 3600);
+
+      // Verify initial state: invoice inv-2026-11-002 is UNPAID (amount 150)
+      const initialHistory = await consumerService.getPaymentHistory();
+      const unpaidInvoice = initialHistory.find((p) => p.invoice_id === 'inv-2026-11-002');
+      expect(unpaidInvoice?.status).toBe('UNPAID');
+
+      const initialDashboard = await consumerService.getDashboard();
+      expect(initialDashboard.pending_amount).toBe(150);
+
+      const state0 = getStoreState();
+      const initialAdminTotal = state0.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0);
+      expect(initialAdminTotal).toBe(150); // only inv-2026-10-001 was paid
+
+      // Simulate desync / interrupted write: An active payment order exists and was set to 'PAID' in registry,
+      // but the invoice in the ledger was NOT yet updated to PAID (still UNPAID)
+      const desyncedOrderId = 'order_desync_' + Date.now();
+      registerPaymentOrder({
+        order_id: desyncedOrderId,
+        invoice_id: 'inv-2026-11-002',
+        consumer_id: johnUserId,
+        amount: 150,
+        currency: 'INR',
+        key_id: 'rzp_test_greenpulse_demo',
+        status: 'PAID', // order marked paid
+        receipt_id: 'rcpt_inv-2026-11-002',
+        created_at: new Date().toISOString(),
+      });
+
+      // Confirmation is retried
+      const verifyRes = await consumerService.verifyPayment(
+        desyncedOrderId,
+        'pay_retry_reconcile',
+        'sig_retry_reconcile',
+        'inv-2026-11-002'
+      );
+
+      // Verify that confirmation performs authoritative settlement on the invoice ledger
+      expect(verifyRes.status).toBe('PAID');
+      expect(verifyRes.invoice_id).toBe('inv-2026-11-002');
+
+      // 1. Consumer balance must reflect settled payment
+      const updatedHistory = await consumerService.getPaymentHistory();
+      const reconciledInvoice = updatedHistory.find((p) => p.invoice_id === 'inv-2026-11-002');
+      expect(reconciledInvoice?.status).toBe('PAID');
+      const updatedDashboard = await consumerService.getDashboard();
+      expect(updatedDashboard.pending_amount).toBe(0);
+
+      // 2. Receipt count must increase by exactly 1
+      const paidReceipts = updatedHistory.filter((p) => p.status === 'PAID');
+      expect(paidReceipts).toHaveLength(2); // inv-2026-10-001 and inv-2026-11-002
+
+      // 3. Admin total must increase by exactly ₹150 (from 150 to 300)
+      const state1 = getStoreState();
+      const reconciledAdminTotal = state1.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0);
+      expect(reconciledAdminTotal).toBe(300);
+
+      // 4. A subsequent retry confirmation must return the same receipt without double-crediting
+      const retryRes = await consumerService.verifyPayment(
+        desyncedOrderId,
+        'pay_second_retry',
+        'sig_second_retry',
+        'inv-2026-11-002'
+      );
+      expect(retryRes.status).toBe('PAID');
+      const state2 = getStoreState();
+      const finalAdminTotal = state2.payments.filter((p) => p.status === 'PAID').reduce((sum, p) => sum + p.amount, 0);
+      expect(finalAdminTotal).toBe(300); // Still 300, unchanged!
     });
   });
 
