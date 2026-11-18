@@ -1,45 +1,94 @@
-import React, { useState } from 'react';
-import { APP_MODE, USE_MOCK_API, ENABLE_DEMO_TOOLS, OPERATIONAL_TIMEZONE } from './lib/env';
-import { ResetDemoDataControl } from './components/demo/ResetDemoDataControl';
+// src/App.tsx
+// Root application component with routing, AuthProvider, and ProtectedRoutes
+
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { ProtectedRoute } from './components/layout/ProtectedRoute';
+import { AppShell } from './components/layout/AppShell';
+import { UnifiedLoginPage } from './pages/auth/UnifiedLoginPage';
+import { ConsumerDashboard } from './pages/consumer/ConsumerDashboard';
+import { AgentDashboard } from './pages/agent/AgentDashboard';
+import { AdminDashboard } from './pages/admin/AdminDashboard';
+import './api/mockAdapter'; // Auto-register mock adapter if in demo mode
+
+// Default landing redirect based on authentication and role
+const RootRedirect: React.FC = () => {
+  const { isAuthenticated, role, isLoading } = useAuth();
+
+  if (isLoading) {
+    return null;
+  }
+
+  if (!isAuthenticated || !role) {
+    return <Navigate to="/login" replace />;
+  }
+
+  const rolePaths = {
+    CONSUMER: '/consumer',
+    AGENT: '/agent',
+    ADMIN: '/admin',
+  };
+
+  return <Navigate to={rolePaths[role] || '/login'} replace />;
+};
+
+export const AppRoutes: React.FC = () => {
+  return (
+    <Routes>
+      {/* Public Login Route */}
+      <Route path="/login" element={<UnifiedLoginPage />} />
+
+      {/* Role Protected Consumer Routes */}
+      <Route
+        path="/consumer/*"
+        element={
+          <ProtectedRoute allowedRoles={['CONSUMER']}>
+            <AppShell>
+              <ConsumerDashboard />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Role Protected Agent Routes */}
+      <Route
+        path="/agent/*"
+        element={
+          <ProtectedRoute allowedRoles={['AGENT']}>
+            <AppShell>
+              <AgentDashboard />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Role Protected Admin Routes */}
+      <Route
+        path="/admin/*"
+        element={
+          <ProtectedRoute allowedRoles={['ADMIN']}>
+            <AppShell>
+              <AdminDashboard />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Root & Fallback */}
+      <Route path="/" element={<RootRedirect />} />
+      <Route path="*" element={<RootRedirect />} />
+    </Routes>
+  );
+};
 
 export const App: React.FC = () => {
-  const [, setRefreshKey] = useState(0);
-
   return (
-    <div className="flex min-h-screen items-center justify-center p-4 bg-gray-50">
-      <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-6 text-center border border-gray-100">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">Smart Waste Management</h1>
-        <p className="text-gray-600 text-sm mb-4">Phase 0 Contract Freeze & Environment Setup Verified</p>
-        
-        <div className="space-y-2 mb-4 text-xs text-left bg-gray-50 p-3 rounded-lg border border-gray-200">
-          <div className="flex justify-between">
-            <span className="text-gray-500 font-medium">Mode:</span>
-            <span className="font-semibold text-gray-800" data-testid="app-mode">{APP_MODE}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-500 font-medium">Mock API:</span>
-            <span className="font-semibold text-gray-800" data-testid="mock-api">{USE_MOCK_API ? 'Enabled' : 'Disabled'}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-500 font-medium">Demo Tools:</span>
-            <span className="font-semibold text-gray-800" data-testid="demo-tools">{ENABLE_DEMO_TOOLS ? 'Enabled' : 'Disabled'}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-500 font-medium">Timezone:</span>
-            <span className="font-semibold text-gray-800" data-testid="timezone">{OPERATIONAL_TIMEZONE}</span>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-3 items-center">
-          <span className="inline-block bg-emerald-100 text-emerald-800 text-xs px-3 py-1 rounded-full font-semibold" data-testid="status-badge">
-            {APP_MODE === 'demo' ? 'Demo Mode Ready' : 'Production Active'}
-          </span>
-
-          {/* Demo-only reset control (hidden strictly in production builds) */}
-          <ResetDemoDataControl onReset={() => setRefreshKey((k) => k + 1)} className="mt-2" />
-        </div>
-      </div>
-    </div>
+    <AuthProvider>
+      <BrowserRouter>
+        <AppRoutes />
+      </BrowserRouter>
+    </AuthProvider>
   );
 };
 
